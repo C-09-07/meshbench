@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import trimesh
 
+from meshbench._edges import edge_face_counts
 from meshbench.density import compute_density_report
 from meshbench.fingerprint import compute_fingerprint
 from meshbench.manifold import compute_manifold_report
@@ -32,21 +33,17 @@ def audit(mesh: trimesh.Trimesh) -> MeshReport:
     Returns a MeshReport with fingerprint, manifold, normals,
     topology, and density sub-reports.
     """
-    # Count unique edges
-    edge_set: set[tuple[int, int]] = set()
-    for face in mesh.faces:
-        for i in range(3):
-            v0, v1 = int(face[i]), int(face[(i + 1) % 3])
-            edge_set.add((min(v0, v1), max(v0, v1)))
+    # Compute edges once, share across sub-reports
+    edges, counts = edge_face_counts(mesh)
 
     return MeshReport(
         vertex_count=mesh.vertices.shape[0],
         face_count=mesh.faces.shape[0],
-        edge_count=len(edge_set),
+        edge_count=len(edges),
         fingerprint=compute_fingerprint(mesh),
-        manifold=compute_manifold_report(mesh),
+        manifold=compute_manifold_report(mesh, _edge_data=(edges, counts)),
         normals=compute_normal_report(mesh),
-        topology=compute_topology_report(mesh),
+        topology=compute_topology_report(mesh, _edge_data=(edges, counts)),
         density=compute_density_report(mesh),
     )
 

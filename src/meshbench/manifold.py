@@ -7,37 +7,49 @@ from collections import defaultdict
 import numpy as np
 import trimesh
 
+from meshbench._edges import edge_face_counts as _vec_edge_face_counts
 from meshbench.types import ManifoldReport
 
-
-def _edge_face_counts(mesh: trimesh.Trimesh) -> dict[tuple[int, int], int]:
-    """Build a map from sorted edge tuples to face count."""
-    edge_counts: dict[tuple[int, int], int] = defaultdict(int)
-    for face in mesh.faces:
-        for i in range(3):
-            v0, v1 = int(face[i]), int(face[(i + 1) % 3])
-            edge = (min(v0, v1), max(v0, v1))
-            edge_counts[edge] += 1
-    return edge_counts
+# Type alias for pre-computed edge data passed from audit()
+EdgeData = tuple[np.ndarray, np.ndarray]  # (edges, counts)
 
 
-def boundary_edges(mesh: trimesh.Trimesh) -> list[tuple[int, int]]:
-    """Return edges shared by exactly 1 face (boundary/open edges)."""
-    counts = _edge_face_counts(mesh)
-    return [edge for edge, count in counts.items() if count == 1]
+def _get_edge_data(
+    mesh: trimesh.Trimesh,
+    _edge_data: EdgeData | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (edges, counts), using pre-computed data if available."""
+    if _edge_data is not None:
+        return _edge_data
+    return _vec_edge_face_counts(mesh)
 
 
-def boundary_loops(mesh: trimesh.Trimesh) -> int:
+def boundary_edges(
+    mesh: trimesh.Trimesh,
+    _edge_data: EdgeData | None = None,
+) -> np.ndarray:
+    """Return edges shared by exactly 1 face (boundary/open edges).
+
+    Returns (N, 2) array of boundary edge vertex pairs.
+    """
+    edges, counts = _get_edge_data(mesh, _edge_data)
+    return edges[counts == 1]
+
+
+def boundary_loops(
+    mesh: trimesh.Trimesh,
+    _edge_data: EdgeData | None = None,
+) -> int:
     """Count closed loops formed by boundary edges (= number of holes)."""
-    edges = boundary_edges(mesh)
-    if not edges:
+    b_edges = boundary_edges(mesh, _edge_data)
+    if len(b_edges) == 0:
         return 0
 
     # Build adjacency from boundary edges
     adj: dict[int, list[int]] = defaultdict(list)
-    for v0, v1 in edges:
-        adj[v0].append(v1)
-        adj[v1].append(v0)
+    for v0, v1 in b_edges:
+        adj[int(v0)].append(int(v1))
+        adj[int(v1)].append(int(v0))
 
     # Count connected components via BFS
     visited: set[int] = set()
@@ -59,10 +71,16 @@ def boundary_loops(mesh: trimesh.Trimesh) -> int:
     return loop_count
 
 
-def non_manifold_edges(mesh: trimesh.Trimesh) -> list[tuple[int, int]]:
-    """Return edges shared by more than 2 faces."""
-    counts = _edge_face_counts(mesh)
-    return [edge for edge, count in counts.items() if count > 2]
+def non_manifold_edges(
+    mesh: trimesh.Trimesh,
+    _edge_data: EdgeData | None = None,
+) -> np.ndarray:
+    """Return edges shared by more than 2 faces.
+
+    Returns (N, 2) array of non-manifold edge vertex pairs.
+    """
+    edges, counts = _get_edge_data(mesh, _edge_data)
+    return edges[counts > 2]
 
 
 def non_manifold_vertices(mesh: trimesh.Trimesh) -> list[int]:
@@ -70,59 +88,179 @@ def non_manifold_vertices(mesh: trimesh.Trimesh) -> list[int]:
 
     A vertex is non-manifold if the faces around it form more than one
     connected component when considering only face-adjacency through that vertex.
+
+    Strategy: build a global edge→face-pair lookup (vectorized), then for each
+    vertex that has >1 incident face, check connectivity of its face fan using
+    the pre-built lookup and a simple union-find.
     """
-    if mesh.faces.shape[0] == 0:
+    faces = mesh.faces
+    n_faces = faces.shape[0]
+    if n_faces == 0:
         return []
 
-    # Build vertex → face index map
-    vert_faces: dict[int, set[int]] = defaultdict(set)
-    for fi, face in enumerate(mesh.faces):
-        for v in face:
-            vert_faces[int(v)].add(fi)
+    # --- Build edge → face pairs (vectorized) ---
+    e0 = np.column_stack([faces[:, 0], faces[:, 1]])
+    e1 = np.column_stack([faces[:, 1], faces[:, 2]])
+    e2 = np.column_stack([faces[:, 2], faces[:, 0]])
+    all_edges = np.vstack([e0, e1, e2])  # (3F, 2)
+    all_edges.sort(axis=1)
+    face_ids = np.tile(np.arange(n_faces), 3)
 
-    # Build face adjacency restricted to shared vertex
+    max_v = int(faces.max()) + 1
+    edge_keys = all_edges[:, 0].astype(np.int64) * max_v + all_edges[:, 1].astype(np.int64)
+
+    order = np.argsort(edge_keys)
+    sorted_keys = edge_keys[order]
+    sorted_face_ids = face_ids[order]
+    sorted_edges = all_edges[order]
+
+    changes = np.where(np.diff(sorted_keys) != 0)[0] + 1
+    edge_starts = np.concatenate([[0], changes])
+    edge_ends = np.concatenate([changes, [len(sorted_keys)]])
+    edge_sizes = edge_ends - edge_starts
+
+    # --- Vectorized: edges with exactly 2 faces (the common case) ---
+    # For each such edge, faces f1 and f2 are adjacent through both endpoints.
+    exactly2 = edge_sizes == 2
+    e2_idx = np.where(exactly2)[0]
+
+    if len(e2_idx) > 0:
+        e2_starts = edge_starts[e2_idx]
+        f1 = sorted_face_ids[e2_starts]
+        f2 = sorted_face_ids[e2_starts + 1]
+        ev0 = sorted_edges[e2_starts, 0]
+        ev1 = sorted_edges[e2_starts, 1]
+
+        # Create adjacency arrays: (vertex, face_a, face_b) triples
+        # Each edge contributes 2 triples (one per endpoint)
+        adj_v = np.concatenate([ev0, ev1])
+        adj_fa = np.concatenate([f1, f1])
+        adj_fb = np.concatenate([f2, f2])
+    else:
+        adj_v = np.array([], dtype=np.intp)
+        adj_fa = np.array([], dtype=np.intp)
+        adj_fb = np.array([], dtype=np.intp)
+
+    # Handle edges with >2 faces (rare — non-manifold edges)
+    gt2_idx = np.where(edge_sizes > 2)[0]
+    if len(gt2_idx) > 0:
+        extra_v, extra_fa, extra_fb = [], [], []
+        for ei in gt2_idx:
+            s, e = int(edge_starts[ei]), int(edge_ends[ei])
+            efaces = sorted_face_ids[s:e]
+            v0, v1 = int(sorted_edges[s, 0]), int(sorted_edges[s, 1])
+            for ii in range(len(efaces)):
+                for jj in range(ii + 1, len(efaces)):
+                    for vv in (v0, v1):
+                        extra_v.append(vv)
+                        extra_fa.append(int(efaces[ii]))
+                        extra_fb.append(int(efaces[jj]))
+        if extra_v:
+            adj_v = np.concatenate([adj_v, np.array(extra_v, dtype=np.intp)])
+            adj_fa = np.concatenate([adj_fa, np.array(extra_fa, dtype=np.intp)])
+            adj_fb = np.concatenate([adj_fb, np.array(extra_fb, dtype=np.intp)])
+
+    # Sort adjacency by vertex for slicing
+    a_order = np.argsort(adj_v)
+    adj_v = adj_v[a_order]
+    adj_fa = adj_fa[a_order]
+    adj_fb = adj_fb[a_order]
+
+    a_changes = np.where(np.diff(adj_v) != 0)[0] + 1
+    a_starts = np.concatenate([[0], a_changes])
+    a_ends = np.concatenate([a_changes, [len(adj_v)]])
+    a_verts = adj_v[a_starts]
+
+    # Build lookup: vertex → (start, end) in adj arrays
+    a_lookup: dict[int, tuple[int, int]] = {}
+    for i in range(len(a_verts)):
+        a_lookup[int(a_verts[i])] = (int(a_starts[i]), int(a_ends[i]))
+
+    # --- Build vertex → incident faces ---
+    vert_indices = faces.ravel()
+    face_indices = np.repeat(np.arange(n_faces), 3)
+    v_order = np.argsort(vert_indices)
+    sv = vert_indices[v_order]
+    sf = face_indices[v_order]
+    v_changes = np.where(np.diff(sv) != 0)[0] + 1
+    v_starts = np.concatenate([[0], v_changes])
+    v_ends = np.concatenate([v_changes, [len(sv)]])
+    v_group_verts = sv[v_starts]
+    v_group_sizes = v_ends - v_starts
+
+    check_indices = np.where(v_group_sizes > 1)[0]
+    if len(check_indices) == 0:
+        return []
+
+    # --- Check connectivity per vertex using inline union-find ---
     non_manifold = []
-    for v, face_set in vert_faces.items():
-        if len(face_set) <= 1:
+    for idx in check_indices:
+        v = int(v_group_verts[idx])
+        incident = sf[v_starts[idx]:v_ends[idx]]
+        n = len(incident)
+        if n <= 1:
             continue
 
-        # Two faces are connected through v if they share v AND another vertex
-        face_list = list(face_set)
-        face_verts = {fi: set(int(x) for x in mesh.faces[fi]) for fi in face_list}
+        bounds = a_lookup.get(v)
+        if bounds is None:
+            non_manifold.append(v)
+            continue
 
-        adj: dict[int, set[int]] = defaultdict(set)
-        for i, fi in enumerate(face_list):
-            for j in range(i + 1, len(face_list)):
-                fj = face_list[j]
-                # Shared verts besides v
-                shared = face_verts[fi] & face_verts[fj] - {v}
-                if shared:
-                    adj[fi].add(fj)
-                    adj[fj].add(fi)
+        s, e = bounds
+        local_fa = adj_fa[s:e]
+        local_fb = adj_fb[s:e]
 
-        # BFS to check connectivity
-        visited: set[int] = set()
-        queue = [face_list[0]]
-        while queue:
-            node = queue.pop()
-            if node in visited:
-                continue
-            visited.add(node)
-            for neighbor in adj[node]:
-                if neighbor not in visited:
-                    queue.append(neighbor)
+        # Map global face → local index
+        face_map: dict[int, int] = {}
+        for i in range(n):
+            face_map[int(incident[i])] = i
 
-        if len(visited) < len(face_set):
+        # Inline union-find (avoids function call overhead)
+        parent = list(range(n))
+
+        for k in range(len(local_fa)):
+            la = face_map.get(int(local_fa[k]), -1)
+            lb = face_map.get(int(local_fb[k]), -1)
+            if la >= 0 and lb >= 0:
+                # find(la)
+                x = la
+                while parent[x] != x:
+                    parent[x] = parent[parent[x]]
+                    x = parent[x]
+                ra = x
+                # find(lb)
+                x = lb
+                while parent[x] != x:
+                    parent[x] = parent[parent[x]]
+                    x = parent[x]
+                rb = x
+                if ra != rb:
+                    parent[ra] = rb
+
+        # Count components
+        roots = set()
+        for i in range(n):
+            x = i
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            roots.add(x)
+        if len(roots) > 1:
             non_manifold.append(v)
 
     return non_manifold
 
 
-def compute_manifold_report(mesh: trimesh.Trimesh) -> ManifoldReport:
+def compute_manifold_report(
+    mesh: trimesh.Trimesh,
+    _edge_data: EdgeData | None = None,
+) -> ManifoldReport:
     """Compute a full ManifoldReport for a mesh."""
-    b_edges = boundary_edges(mesh)
-    b_loops = boundary_loops(mesh)
-    nm_edges = non_manifold_edges(mesh)
+    edge_data = _get_edge_data(mesh, _edge_data)
+
+    b_edges = boundary_edges(mesh, edge_data)
+    b_loops = boundary_loops(mesh, edge_data)
+    nm_edges = non_manifold_edges(mesh, edge_data)
     nm_verts = non_manifold_vertices(mesh)
 
     return ManifoldReport(

@@ -2,28 +2,30 @@
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import Counter
 
 import numpy as np
 import trimesh
 
+from meshbench._edges import edge_face_counts as _vec_edge_face_counts, vertex_valences
 from meshbench.types import TopologyReport
 
+# Type alias for pre-computed edge data
+EdgeData = tuple[np.ndarray, np.ndarray]
 
-def genus(mesh: trimesh.Trimesh) -> int:
+
+def genus(mesh: trimesh.Trimesh, _edge_data: EdgeData | None = None) -> int:
     """Compute topological genus from the Euler characteristic.
 
     V - E + F = 2(1 - g) for a single connected closed surface.
     For open or multi-component meshes this is a generalized genus.
     """
     v = mesh.vertices.shape[0]
-    # Count unique edges
-    edge_set: set[tuple[int, int]] = set()
-    for face in mesh.faces:
-        for i in range(3):
-            v0, v1 = int(face[i]), int(face[(i + 1) % 3])
-            edge_set.add((min(v0, v1), max(v0, v1)))
-    e = len(edge_set)
+    if _edge_data is not None:
+        e = len(_edge_data[0])
+    else:
+        edges, _ = _vec_edge_face_counts(mesh)
+        e = len(edges)
     f = mesh.faces.shape[0]
 
     # V - E + F = 2(1 - g)  =>  g = 1 - (V - E + F) / 2
@@ -35,25 +37,16 @@ def genus(mesh: trimesh.Trimesh) -> int:
 def valence_histogram(mesh: trimesh.Trimesh) -> dict[int, int]:
     """Compute vertex valence histogram.
 
-    Returns dict mapping valence → count of vertices with that valence.
+    Returns dict mapping valence -> count of vertices with that valence.
     """
-    counter: Counter[int] = Counter()
-    vert_edges: dict[int, set[int]] = defaultdict(set)
-
-    for face in mesh.faces:
-        for i in range(3):
-            v0, v1 = int(face[i]), int(face[(i + 1) % 3])
-            vert_edges[v0].add(v1)
-            vert_edges[v1].add(v0)
-
-    for v in range(mesh.vertices.shape[0]):
-        counter[len(vert_edges[v])] += 1
-
+    valences = vertex_valences(mesh)
+    counter: Counter[int] = Counter(int(v) for v in valences)
     return dict(sorted(counter.items()))
 
 
 def valence_stats(
     mesh: trimesh.Trimesh,
+    _histogram: dict[int, int] | None = None,
 ) -> tuple[float, float, float, int]:
     """Compute valence statistics.
 
@@ -62,18 +55,20 @@ def valence_stats(
         where quad_compatible_ratio is fraction of vertices at valence 4
         and outlier_count is vertices with valence >= 10.
     """
-    hist = valence_histogram(mesh)
+    hist = _histogram if _histogram is not None else valence_histogram(mesh)
     if not hist:
         return 0.0, 0.0, 0.0, 0
 
     total_verts = sum(hist.values())
-    valences = []
-    for val, count in hist.items():
-        valences.extend([val] * count)
 
-    arr = np.array(valences, dtype=float)
-    mean = float(np.mean(arr))
-    std = float(np.std(arr))
+    # Build valence array directly from histogram (avoid re-computing)
+    valences = np.repeat(
+        np.array(list(hist.keys()), dtype=float),
+        np.array(list(hist.values()), dtype=int),
+    )
+
+    mean = float(np.mean(valences))
+    std = float(np.std(valences))
 
     quad_count = hist.get(4, 0)
     quad_ratio = quad_count / total_verts if total_verts > 0 else 0.0
@@ -94,8 +89,9 @@ def floating_vertices(mesh: trimesh.Trimesh) -> list[int]:
     if mesh.faces.shape[0] == 0:
         return list(range(mesh.vertices.shape[0]))
 
-    referenced = set(mesh.faces.flatten())
-    return [i for i in range(mesh.vertices.shape[0]) if i not in referenced]
+    referenced = np.unique(mesh.faces)
+    all_verts = np.arange(mesh.vertices.shape[0])
+    return list(np.setdiff1d(all_verts, referenced))
 
 
 def component_sizes(mesh: trimesh.Trimesh) -> list[tuple[int, int]]:
@@ -112,11 +108,14 @@ def component_sizes(mesh: trimesh.Trimesh) -> list[tuple[int, int]]:
     return sizes
 
 
-def compute_topology_report(mesh: trimesh.Trimesh) -> TopologyReport:
+def compute_topology_report(
+    mesh: trimesh.Trimesh,
+    _edge_data: EdgeData | None = None,
+) -> TopologyReport:
     """Compute a full TopologyReport for a mesh."""
-    g = genus(mesh)
+    g = genus(mesh, _edge_data)
     hist = valence_histogram(mesh)
-    mean, std, quad_ratio, outlier_count = valence_stats(mesh)
+    mean, std, quad_ratio, outlier_count = valence_stats(mesh, _histogram=hist)
     degenerates = degenerate_faces(mesh)
     floating = floating_vertices(mesh)
     comp_sizes = component_sizes(mesh)
