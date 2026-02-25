@@ -12,6 +12,7 @@ dependencies = [
     "trimesh>=4.0",
     "numpy>=1.26",
     "scipy>=1.11",
+    "networkx>=3.0",
 ]
 
 [project.optional-dependencies]
