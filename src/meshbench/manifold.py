@@ -7,11 +7,8 @@ from collections import defaultdict
 import numpy as np
 import trimesh
 
-from meshbench._edges import edge_face_counts as _vec_edge_face_counts
+from meshbench._edges import EdgeData, _build_sorted_edges, edge_face_counts as _vec_edge_face_counts
 from meshbench.types import ManifoldReport
-
-# Type alias for pre-computed edge data passed from audit()
-EdgeData = tuple[np.ndarray, np.ndarray]  # (edges, counts)
 
 
 def _get_edge_data(
@@ -99,11 +96,7 @@ def non_manifold_vertices(mesh: trimesh.Trimesh) -> list[int]:
         return []
 
     # --- Build edge → face pairs (vectorized) ---
-    e0 = np.column_stack([faces[:, 0], faces[:, 1]])
-    e1 = np.column_stack([faces[:, 1], faces[:, 2]])
-    e2 = np.column_stack([faces[:, 2], faces[:, 0]])
-    all_edges = np.vstack([e0, e1, e2])  # (3F, 2)
-    all_edges.sort(axis=1)
+    all_edges = _build_sorted_edges(faces)  # (3F, 2)
     face_ids = np.tile(np.arange(n_faces), 3)
 
     max_v = int(faces.max()) + 1

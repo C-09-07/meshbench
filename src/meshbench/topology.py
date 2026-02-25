@@ -7,11 +7,8 @@ from collections import Counter
 import numpy as np
 import trimesh
 
-from meshbench._edges import edge_face_counts as _vec_edge_face_counts, vertex_valences
+from meshbench._edges import EdgeData, edge_face_counts as _vec_edge_face_counts, vertex_valences
 from meshbench.types import TopologyReport
-
-# Type alias for pre-computed edge data
-EdgeData = tuple[np.ndarray, np.ndarray]
 
 
 def genus(mesh: trimesh.Trimesh, _edge_data: EdgeData | None = None) -> int:
@@ -98,9 +95,10 @@ def component_sizes(mesh: trimesh.Trimesh) -> list[tuple[int, int]]:
     """Return (face_count, vertex_count) per connected component, sorted descending."""
     try:
         components = mesh.split()
-        if not components:
-            return [(mesh.faces.shape[0], mesh.vertices.shape[0])]
-    except Exception:
+    except ModuleNotFoundError:
+        return [(mesh.faces.shape[0], mesh.vertices.shape[0])]
+
+    if not components:
         return [(mesh.faces.shape[0], mesh.vertices.shape[0])]
 
     sizes = [(c.faces.shape[0], c.vertices.shape[0]) for c in components]

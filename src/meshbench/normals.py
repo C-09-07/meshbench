@@ -9,11 +9,15 @@ from __future__ import annotations
 import numpy as np
 import trimesh
 
+from meshbench._entropy import _histogram_entropy
 from meshbench.fingerprint import compute_pca
 from meshbench.types import NormalReport
 
 
-def normal_entropy(mesh: trimesh.Trimesh) -> float:
+def normal_entropy(
+    mesh: trimesh.Trimesh,
+    _pca: tuple[np.ndarray, np.ndarray] | None = None,
+) -> float:
     """Compute Shannon entropy of face normals projected onto the minor PCA axis.
 
     Uses a 32-bin histogram over dot products in [-1, 1].
@@ -22,17 +26,10 @@ def normal_entropy(mesh: trimesh.Trimesh) -> float:
     if mesh.faces.shape[0] == 0:
         return 0.0
 
-    pca_axes, _ = compute_pca(mesh)
+    pca_axes, _ = _pca if _pca is not None else compute_pca(mesh)
     minor_axis = pca_axes[2]
     dots = np.dot(mesh.face_normals, minor_axis)
-
-    counts, _ = np.histogram(dots, bins=32, range=(-1.0, 1.0))
-    total = counts.sum()
-    if total == 0:
-        return 0.0
-    probs = counts / total
-    probs = probs[probs > 0]
-    return float(-np.sum(probs * np.log2(probs)))
+    return _histogram_entropy(dots, bins=32)
 
 
 def dominant_normal(
@@ -100,10 +97,16 @@ def flipped_normal_count(mesh: trimesh.Trimesh) -> int:
     return int(np.sum(dots < 0))
 
 
-def winding_consistency(mesh: trimesh.Trimesh) -> float:
+def winding_consistency(
+    mesh: trimesh.Trimesh,
+    _flipped: int | None = None,
+) -> float:
     """Fraction of adjacent face pairs with consistent winding (normals agree).
 
     Returns 1.0 for perfectly consistent winding, 0.0 for all flipped.
+
+    Args:
+        _flipped: Optional pre-computed flipped_normal_count to avoid recomputation.
     """
     if mesh.faces.shape[0] < 2:
         return 1.0
@@ -113,39 +116,14 @@ def winding_consistency(mesh: trimesh.Trimesh) -> float:
     if total_pairs == 0:
         return 1.0
 
-    flipped = flipped_normal_count(mesh)
+    flipped = _flipped if _flipped is not None else flipped_normal_count(mesh)
     return 1.0 - (flipped / total_pairs)
 
 
-def _hemisphere_entropy(
-    face_normals: np.ndarray,
-    axis: np.ndarray,
-    positive: bool,
+def backface_divergence(
+    mesh: trimesh.Trimesh,
+    _pca: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> float:
-    """Compute normal entropy for faces on one side of a PCA axis split."""
-    dots_to_axis = face_normals @ axis
-    if positive:
-        mask = dots_to_axis >= 0
-    else:
-        mask = dots_to_axis < 0
-
-    selected = face_normals[mask]
-    if len(selected) == 0:
-        return 0.0
-
-    # Entropy of the selected normals' distribution (using z-component as proxy)
-    # Use the same axis projection for entropy calculation
-    dots = np.dot(selected, axis)
-    counts, _ = np.histogram(dots, bins=16, range=(-1.0, 1.0))
-    total = counts.sum()
-    if total == 0:
-        return 0.0
-    probs = counts / total
-    probs = probs[probs > 0]
-    return float(-np.sum(probs * np.log2(probs)))
-
-
-def backface_divergence(mesh: trimesh.Trimesh) -> float:
     """View-independent backface divergence.
 
     Splits faces along each PCA axis into front/back hemispheres,
@@ -156,7 +134,7 @@ def backface_divergence(mesh: trimesh.Trimesh) -> float:
     if mesh.faces.shape[0] < 2:
         return 0.0
 
-    pca_axes, _ = compute_pca(mesh)
+    pca_axes, _ = _pca if _pca is not None else compute_pca(mesh)
     face_normals = mesh.face_normals
     face_centers = mesh.triangles_center
     mesh_center = mesh.centroid
@@ -164,7 +142,6 @@ def backface_divergence(mesh: trimesh.Trimesh) -> float:
     max_diff = 0.0
     for i in range(3):
         axis = pca_axes[i]
-        # Split by position relative to centroid
         projections = (face_centers - mesh_center) @ axis
         pos_mask = projections >= 0
         neg_mask = ~pos_mask
@@ -172,23 +149,8 @@ def backface_divergence(mesh: trimesh.Trimesh) -> float:
         if pos_mask.sum() == 0 or neg_mask.sum() == 0:
             continue
 
-        # Entropy of normals in each hemisphere
-        pos_normals = face_normals[pos_mask]
-        neg_normals = face_normals[neg_mask]
-
-        def _entropy_of(normals: np.ndarray) -> float:
-            # Project onto all 3 axes, take max entropy
-            dots = np.dot(normals, axis)
-            counts, _ = np.histogram(dots, bins=16, range=(-1.0, 1.0))
-            total = counts.sum()
-            if total == 0:
-                return 0.0
-            probs = counts / total
-            probs = probs[probs > 0]
-            return float(-np.sum(probs * np.log2(probs)))
-
-        ent_pos = _entropy_of(pos_normals)
-        ent_neg = _entropy_of(neg_normals)
+        ent_pos = _histogram_entropy(np.dot(face_normals[pos_mask], axis), bins=16)
+        ent_neg = _histogram_entropy(np.dot(face_normals[neg_mask], axis), bins=16)
         max_diff = max(max_diff, abs(ent_pos - ent_neg))
 
     return round(max_diff, 4)
@@ -212,23 +174,15 @@ def backface_coherence(mesh: trimesh.Trimesh, view_dir: np.ndarray) -> float:
     face_normals = mesh.face_normals
     dots = face_normals @ view_dir
 
-    front = face_normals[dots >= 0]
-    back = face_normals[dots < 0]
+    front_mask = dots >= 0
+    back_mask = ~front_mask
 
-    if len(front) == 0 or len(back) == 0:
+    if front_mask.sum() == 0 or back_mask.sum() == 0:
         return 0.0
 
-    def _ent(normals: np.ndarray) -> float:
-        d = np.dot(normals, view_dir)
-        counts, _ = np.histogram(d, bins=16, range=(-1.0, 1.0))
-        total = counts.sum()
-        if total == 0:
-            return 0.0
-        probs = counts / total
-        probs = probs[probs > 0]
-        return float(-np.sum(probs * np.log2(probs)))
-
-    return round(abs(_ent(front) - _ent(back)), 4)
+    ent_front = _histogram_entropy(dots[front_mask], bins=16)
+    ent_back = _histogram_entropy(dots[back_mask], bins=16)
+    return round(abs(ent_front - ent_back), 4)
 
 
 def check_and_fix_inverted_normals(
@@ -268,13 +222,21 @@ def check_and_fix_inverted_normals(
     return False
 
 
-def compute_normal_report(mesh: trimesh.Trimesh) -> NormalReport:
-    """Compute a full NormalReport for a mesh."""
-    ent = normal_entropy(mesh)
+def compute_normal_report(
+    mesh: trimesh.Trimesh,
+    _pca: tuple[np.ndarray, np.ndarray] | None = None,
+) -> NormalReport:
+    """Compute a full NormalReport for a mesh.
+
+    Args:
+        _pca: Optional pre-computed (axes, extents) from compute_pca().
+    """
+    pca = _pca if _pca is not None else compute_pca(mesh)
+    ent = normal_entropy(mesh, _pca=pca)
     flipped = flipped_normal_count(mesh)
-    consistency = winding_consistency(mesh)
-    divergence = backface_divergence(mesh)
-    dom = dominant_normal(mesh)
+    consistency = winding_consistency(mesh, _flipped=flipped)
+    divergence = backface_divergence(mesh, _pca=pca)
+    dom = dominant_normal(mesh, pca_axes=pca[0])
 
     return NormalReport(
         entropy=round(ent, 4),

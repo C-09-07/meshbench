@@ -4,7 +4,6 @@ Public API:
     audit(mesh)       → MeshReport (full analysis)
     fingerprint(mesh) → Fingerprint
     manifold(mesh)    → ManifoldReport
-    compare(a, b)     → NotImplementedError (placeholder)
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ import trimesh
 
 from meshbench._edges import edge_face_counts
 from meshbench.density import compute_density_report
-from meshbench.fingerprint import compute_fingerprint
+from meshbench.fingerprint import compute_fingerprint, compute_pca
 from meshbench.manifold import compute_manifold_report
 from meshbench.normals import compute_normal_report
 from meshbench.topology import compute_topology_report
@@ -33,16 +32,17 @@ def audit(mesh: trimesh.Trimesh) -> MeshReport:
     Returns a MeshReport with fingerprint, manifold, normals,
     topology, and density sub-reports.
     """
-    # Compute edges once, share across sub-reports
+    # Compute shared data once
     edges, counts = edge_face_counts(mesh)
+    pca = compute_pca(mesh)
 
     return MeshReport(
         vertex_count=mesh.vertices.shape[0],
         face_count=mesh.faces.shape[0],
         edge_count=len(edges),
-        fingerprint=compute_fingerprint(mesh),
+        fingerprint=compute_fingerprint(mesh, _pca=pca),
         manifold=compute_manifold_report(mesh, _edge_data=(edges, counts)),
-        normals=compute_normal_report(mesh),
+        normals=compute_normal_report(mesh, _pca=pca),
         topology=compute_topology_report(mesh, _edge_data=(edges, counts)),
         density=compute_density_report(mesh),
     )
@@ -58,21 +58,10 @@ def manifold(mesh: trimesh.Trimesh) -> ManifoldReport:
     return compute_manifold_report(mesh)
 
 
-def compare(
-    mesh_a: trimesh.Trimesh,
-    mesh_b: trimesh.Trimesh,
-) -> None:
-    """Compare two meshes (placeholder — not yet implemented)."""
-    raise NotImplementedError(
-        "meshbench.compare() is planned but not yet implemented."
-    )
-
-
 __all__ = [
     "audit",
     "fingerprint",
     "manifold",
-    "compare",
     "MeshReport",
     "Fingerprint",
     "ManifoldReport",

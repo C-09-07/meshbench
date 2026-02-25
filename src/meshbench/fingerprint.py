@@ -7,10 +7,14 @@ Ported from customuse core/geometry.py with modifications:
 
 from __future__ import annotations
 
+import logging
 import numpy as np
 import trimesh
 
+from meshbench._entropy import _histogram_entropy
 from meshbench.types import Fingerprint
+
+logger = logging.getLogger(__name__)
 
 
 def compute_pca(mesh: trimesh.Trimesh) -> tuple[np.ndarray, np.ndarray]:
@@ -32,20 +36,27 @@ def compute_pca(mesh: trimesh.Trimesh) -> tuple[np.ndarray, np.ndarray]:
     return axes, extents
 
 
-def compute_fingerprint(mesh: trimesh.Trimesh) -> Fingerprint:
+def compute_fingerprint(
+    mesh: trimesh.Trimesh,
+    _pca: tuple[np.ndarray, np.ndarray] | None = None,
+) -> Fingerprint:
     """Extract geometric shape descriptors from a mesh.
 
     Computes hollowness, thinness, aspect ratio, symmetry, normal entropy,
     component count, and optional taper analysis.
+
+    Args:
+        _pca: Optional pre-computed (axes, extents) from compute_pca().
     """
-    pca_axes, pca_extents = compute_pca(mesh)
+    pca_axes, pca_extents = _pca if _pca is not None else compute_pca(mesh)
 
     # Hollowness: mesh_vol / hull_vol
     try:
         hull_vol = abs(mesh.convex_hull.volume)
         mesh_vol = abs(mesh.volume)
         hollowness = min(mesh_vol / max(hull_vol, 1e-12), 1.0)
-    except Exception:
+    except ValueError:
+        logger.warning("Degenerate convex hull for hollowness, returning 0.0")
         hollowness = 0.0
 
     # Thinness: surface_area / bbox_volume
@@ -53,14 +64,16 @@ def compute_fingerprint(mesh: trimesh.Trimesh) -> Fingerprint:
         area = mesh.area
         bbox_vol = float(np.prod(mesh.bounding_box.extents))
         thinness = area / max(bbox_vol, 1e-12)
-    except Exception:
+    except ValueError:
+        logger.warning("Degenerate bounding box for thinness, returning 0.0")
         thinness = 0.0
 
     # Connected components
     try:
         components = mesh.split()
         component_count = len(components) if components else 1
-    except Exception:
+    except ModuleNotFoundError:
+        logger.warning("networkx not installed, assuming 1 component")
         component_count = 1
 
     # Symmetry: ratio of 2nd/3rd PCA extents
@@ -97,20 +110,11 @@ def compute_fingerprint(mesh: trimesh.Trimesh) -> Fingerprint:
 
 def _normal_entropy(mesh: trimesh.Trimesh, pca_axes: np.ndarray) -> float:
     """Compute Shannon entropy of face normals projected onto the minor PCA axis."""
-    try:
-        if mesh.faces.shape[0] == 0:
-            return 0.0
-        minor_axis = pca_axes[2]
-        dots = np.dot(mesh.face_normals, minor_axis)
-        counts, _ = np.histogram(dots, bins=32, range=(-1.0, 1.0))
-        total = counts.sum()
-        if total == 0:
-            return 0.0
-        probs = counts / total
-        probs = probs[probs > 0]
-        return float(-np.sum(probs * np.log2(probs)))
-    except Exception:
+    if mesh.faces.shape[0] == 0:
         return 0.0
+    minor_axis = pca_axes[2]
+    dots = np.dot(mesh.face_normals, minor_axis)
+    return _histogram_entropy(dots, bins=32)
 
 
 def _perpendicular_spread(verts: np.ndarray, axis: np.ndarray) -> float:
