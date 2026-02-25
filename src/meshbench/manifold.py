@@ -134,7 +134,9 @@ def non_manifold_vertices(mesh: trimesh.Trimesh) -> list[int]:
         adj_fa = np.array([], dtype=np.intp)
         adj_fb = np.array([], dtype=np.intp)
 
-    # Handle edges with >2 faces (rare — non-manifold edges)
+    # Handle edges with >2 faces (non-manifold edges).
+    # Only need a linear chain of unions (f[0]-f[1], f[1]-f[2], ...) per edge
+    # to establish full connectivity — O(N) instead of O(N^2) pairs.
     gt2_idx = np.where(edge_sizes > 2)[0]
     if len(gt2_idx) > 0:
         extra_v, extra_fa, extra_fb = [], [], []
@@ -142,16 +144,30 @@ def non_manifold_vertices(mesh: trimesh.Trimesh) -> list[int]:
             s, e = int(edge_starts[ei]), int(edge_ends[ei])
             efaces = sorted_face_ids[s:e]
             v0, v1 = int(sorted_edges[s, 0]), int(sorted_edges[s, 1])
-            for ii in range(len(efaces)):
-                for jj in range(ii + 1, len(efaces)):
-                    for vv in (v0, v1):
-                        extra_v.append(vv)
-                        extra_fa.append(int(efaces[ii]))
-                        extra_fb.append(int(efaces[jj]))
+            for ii in range(len(efaces) - 1):
+                for vv in (v0, v1):
+                    extra_v.append(vv)
+                    extra_fa.append(int(efaces[ii]))
+                    extra_fb.append(int(efaces[ii + 1]))
         if extra_v:
             adj_v = np.concatenate([adj_v, np.array(extra_v, dtype=np.intp)])
             adj_fa = np.concatenate([adj_fa, np.array(extra_fa, dtype=np.intp)])
             adj_fb = np.concatenate([adj_fb, np.array(extra_fb, dtype=np.intp)])
+
+    # No shared edges → no adjacency info. Every vertex with >1 face
+    # would be non-manifold, but we check below via check_indices.
+    if len(adj_v) == 0:
+        # Fall through: every vertex with >1 incident face is non-manifold
+        vert_indices = faces.ravel()
+        face_indices = np.repeat(np.arange(n_faces), 3)
+        v_order = np.argsort(vert_indices)
+        sv = vert_indices[v_order]
+        v_changes = np.where(np.diff(sv) != 0)[0] + 1
+        v_starts = np.concatenate([[0], v_changes])
+        v_ends = np.concatenate([v_changes, [len(sv)]])
+        v_group_verts = sv[v_starts]
+        v_group_sizes = v_ends - v_starts
+        return [int(v_group_verts[i]) for i in range(len(v_group_verts)) if v_group_sizes[i] > 1]
 
     # Sort adjacency by vertex for slicing
     a_order = np.argsort(adj_v)
