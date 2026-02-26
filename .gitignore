@@ -6,4 +6,7 @@ __pycache__/
 dist/
 build/
 meshes/
+meshes_gen/
 output/
+generation/
+.DS_Store
