@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import logging
 import time
 from pathlib import Path
@@ -23,13 +24,20 @@ def discover_meshes(root: Path) -> list[Path]:
     return sorted(set(paths))
 
 
+_GEOMETRY_ONLY_EXTS = {".glb", ".gltf"}
+
+
 def load_mesh(path: Path) -> trimesh.Trimesh | None:
     """Load a mesh file, flattening scenes to a single Trimesh.
+
+    GLB/glTF files are loaded with force_geometry=True to strip textures
+    and avoid excessive memory usage on large AI-generated meshes.
 
     Returns None if loading fails.
     """
     try:
-        return meshbench.load(path)
+        force = path.suffix.lower() in _GEOMETRY_ONLY_EXTS
+        return meshbench.load(path, force_geometry=force)
     except (ValueError, Exception):
         logger.warning("Failed to load %s", path, exc_info=True)
         return None
@@ -51,6 +59,9 @@ def audit_mesh(path: Path) -> dict | None:
     except Exception:
         logger.warning("Audit failed for %s", path, exc_info=True)
         return None
+    finally:
+        del mesh
+        gc.collect()
 
 
 def stem_name(path: Path) -> str:

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "meshbench"
-version = "0.1.0"
+version = "1.0.0"
 description = "Geometric mesh quality analysis library"
 requires-python = ">=3.11"
 license = "MIT"

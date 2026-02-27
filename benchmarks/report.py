@@ -43,7 +43,7 @@ def build_full_report(
     total = sum(s.get("mesh_count", 0) for s in sources.values())
     report: dict = {
         "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "meshbench_version": "0.1.0",
+        "meshbench_version": "1.0.0",
         "mesh_count": total,
         "sources": sources,
     }
