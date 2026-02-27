@@ -94,3 +94,14 @@ class TestManifoldReport:
     def test_sphere_watertight(self, icosphere: trimesh.Trimesh) -> None:
         report = compute_manifold_report(icosphere)
         assert report.is_watertight is True
+
+    def test_closed_cube_ratios_zero(self, unit_cube: trimesh.Trimesh) -> None:
+        report = compute_manifold_report(unit_cube)
+        assert report.non_manifold_edge_ratio == 0.0
+        assert report.non_manifold_vertex_ratio == 0.0
+        assert report.boundary_edge_ratio == 0.0
+
+    def test_open_box_boundary_ratio(self, open_box: trimesh.Trimesh) -> None:
+        report = compute_manifold_report(open_box)
+        assert report.boundary_edge_ratio > 0.0
+        assert report.boundary_edge_ratio <= 1.0

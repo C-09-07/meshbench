@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import trimesh
 
 from meshbench.topology import (
@@ -106,3 +107,22 @@ class TestTopologyReport:
     def test_two_components_report(self, two_component_mesh: trimesh.Trimesh) -> None:
         report = compute_topology_report(two_component_mesh)
         assert report.component_count == 2
+
+    def test_clean_mesh_ratios_zero(self, unit_cube: trimesh.Trimesh) -> None:
+        report = compute_topology_report(unit_cube)
+        assert report.degenerate_face_ratio == 0.0
+        assert report.floating_vertex_ratio == 0.0
+
+    def test_degenerate_ratio(self) -> None:
+        """Mesh with 1 degenerate + 1 good face → ratio = 0.5."""
+        verts = np.array([
+            [0, 0, 0],
+            [1, 0, 0],
+            [2, 0, 0],  # collinear with first two
+            [0, 1, 0],
+        ], dtype=float)
+        faces = np.array([[0, 1, 2], [0, 1, 3]])
+        mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+        report = compute_topology_report(mesh)
+        assert report.degenerate_face_count == 1
+        assert report.degenerate_face_ratio == pytest.approx(0.5)

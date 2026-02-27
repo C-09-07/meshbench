@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import asdict
 from pathlib import Path
 
 import trimesh
@@ -30,18 +29,8 @@ def load_mesh(path: Path) -> trimesh.Trimesh | None:
     Returns None if loading fails.
     """
     try:
-        result = trimesh.load(str(path))
-        if isinstance(result, trimesh.Scene):
-            geometries = list(result.geometry.values())
-            if not geometries:
-                logger.warning("Empty scene: %s", path)
-                return None
-            return trimesh.util.concatenate(geometries)
-        if isinstance(result, trimesh.Trimesh):
-            return result
-        logger.warning("Unexpected type %s from %s", type(result).__name__, path)
-        return None
-    except Exception:
+        return meshbench.load(path)
+    except (ValueError, Exception):
         logger.warning("Failed to load %s", path, exc_info=True)
         return None
 
@@ -55,7 +44,7 @@ def audit_mesh(path: Path) -> dict | None:
         t0 = time.perf_counter()
         report = meshbench.audit(mesh)
         elapsed = time.perf_counter() - t0
-        d = asdict(report)
+        d = report.to_dict()
         d["_audit_seconds"] = round(elapsed, 4)
         d["_file"] = str(path)
         return d

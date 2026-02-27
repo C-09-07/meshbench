@@ -4,19 +4,23 @@ Public API:
     audit(mesh)       → MeshReport (full analysis)
     fingerprint(mesh) → Fingerprint
     manifold(mesh)    → ManifoldReport
+    load(path)        → trimesh.Trimesh
 """
 
 from __future__ import annotations
 
 import trimesh
 
+from meshbench._cell import compute_cell_report
 from meshbench._edges import edge_face_counts
 from meshbench.density import compute_density_report
 from meshbench.fingerprint import compute_fingerprint, compute_pca
+from meshbench.loading import load
 from meshbench.manifold import compute_manifold_report
 from meshbench.normals import compute_normal_report
 from meshbench.topology import compute_topology_report
 from meshbench.types import (
+    CellReport,
     DensityReport,
     Fingerprint,
     ManifoldReport,
@@ -30,7 +34,7 @@ def audit(mesh: trimesh.Trimesh) -> MeshReport:
     """Run full mesh quality analysis.
 
     Returns a MeshReport with fingerprint, manifold, normals,
-    topology, and density sub-reports.
+    topology, density, and cell sub-reports.
     """
     # Compute shared data once
     edges, counts = edge_face_counts(mesh)
@@ -45,6 +49,7 @@ def audit(mesh: trimesh.Trimesh) -> MeshReport:
         normals=compute_normal_report(mesh, _pca=pca),
         topology=compute_topology_report(mesh, _edge_data=(edges, counts)),
         density=compute_density_report(mesh),
+        cell=compute_cell_report(mesh),
     )
 
 
@@ -61,11 +66,13 @@ def manifold(mesh: trimesh.Trimesh) -> ManifoldReport:
 __all__ = [
     "audit",
     "fingerprint",
+    "load",
     "manifold",
-    "MeshReport",
+    "CellReport",
+    "DensityReport",
     "Fingerprint",
     "ManifoldReport",
+    "MeshReport",
     "NormalReport",
     "TopologyReport",
-    "DensityReport",
 ]

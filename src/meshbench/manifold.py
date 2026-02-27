@@ -266,6 +266,8 @@ def compute_manifold_report(
 ) -> ManifoldReport:
     """Compute a full ManifoldReport for a mesh."""
     edge_data = _get_edge_data(mesh, _edge_data)
+    total_edges = len(edge_data[0])
+    total_verts = mesh.vertices.shape[0]
 
     b_edges = boundary_edges(mesh, edge_data)
     b_loops = boundary_loops(mesh, edge_data)
@@ -278,4 +280,7 @@ def compute_manifold_report(
         boundary_loop_count=b_loops,
         non_manifold_edge_count=len(nm_edges),
         non_manifold_vertex_count=len(nm_verts),
+        non_manifold_edge_ratio=len(nm_edges) / total_edges if total_edges > 0 else 0.0,
+        non_manifold_vertex_ratio=len(nm_verts) / total_verts if total_verts > 0 else 0.0,
+        boundary_edge_ratio=len(b_edges) / total_edges if total_edges > 0 else 0.0,
     )

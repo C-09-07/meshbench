@@ -111,6 +111,9 @@ def compute_topology_report(
     _edge_data: EdgeData | None = None,
 ) -> TopologyReport:
     """Compute a full TopologyReport for a mesh."""
+    n_faces = mesh.faces.shape[0]
+    n_verts = mesh.vertices.shape[0]
+
     g = genus(mesh, _edge_data)
     hist = valence_histogram(mesh)
     mean, std, quad_ratio, outlier_count = valence_stats(mesh, _histogram=hist)
@@ -129,4 +132,6 @@ def compute_topology_report(
         floating_vertex_count=len(floating),
         component_count=len(comp_sizes),
         component_sizes=comp_sizes,
+        degenerate_face_ratio=len(degenerates) / n_faces if n_faces > 0 else 0.0,
+        floating_vertex_ratio=len(floating) / n_verts if n_verts > 0 else 0.0,
     )

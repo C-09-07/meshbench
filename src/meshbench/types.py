@@ -2,13 +2,40 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, fields, field
 
 import numpy as np
 
 
+def _to_dict_value(obj: object) -> object:
+    """Recursively convert a value to JSON-safe types."""
+    if obj is None:
+        return None
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, _ReportMixin):
+        return obj.to_dict()
+    if isinstance(obj, dict):
+        return {k: _to_dict_value(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_dict_value(v) for v in obj]
+    return obj
+
+
+class _ReportMixin:
+    """Mixin providing JSON-safe serialization for report dataclasses."""
+
+    def to_dict(self) -> dict:
+        """Convert to a JSON-serializable dict."""
+        return {f.name: _to_dict_value(getattr(self, f.name)) for f in fields(self)}  # type: ignore[arg-type]
+
+
 @dataclass
-class Fingerprint:
+class Fingerprint(_ReportMixin):
     """Geometric shape descriptors extracted from mesh geometry."""
 
     hollowness: float  # mesh_vol / hull_vol
@@ -22,7 +49,7 @@ class Fingerprint:
 
 
 @dataclass
-class ManifoldReport:
+class ManifoldReport(_ReportMixin):
     """Manifold analysis: boundary edges, non-manifold geometry, watertightness."""
 
     is_watertight: bool  # boundary_edge_count == 0
@@ -30,10 +57,13 @@ class ManifoldReport:
     boundary_loop_count: int  # closed loops of boundary edges (= holes)
     non_manifold_edge_count: int  # edges shared by >2 faces
     non_manifold_vertex_count: int  # vertices where face fan isn't a disc
+    non_manifold_edge_ratio: float = 0.0
+    non_manifold_vertex_ratio: float = 0.0
+    boundary_edge_ratio: float = 0.0
 
 
 @dataclass
-class NormalReport:
+class NormalReport(_ReportMixin):
     """Normal consistency analysis."""
 
     entropy: float  # full-mesh normal entropy
@@ -44,7 +74,7 @@ class NormalReport:
 
 
 @dataclass
-class TopologyReport:
+class TopologyReport(_ReportMixin):
     """Topological analysis: genus, valence distribution, degenerates."""
 
     genus: int  # topological genus from Euler: V-E+F=2(1-g)
@@ -59,10 +89,12 @@ class TopologyReport:
     component_sizes: list[tuple[int, int]] = field(
         default_factory=list
     )  # [(face_count, vert_count), ...] sorted desc
+    degenerate_face_ratio: float = 0.0
+    floating_vertex_ratio: float = 0.0
 
 
 @dataclass
-class DensityReport:
+class DensityReport(_ReportMixin):
     """Polycount efficiency metrics."""
 
     vertices_per_area: float  # vertex_count / surface_area
@@ -70,7 +102,21 @@ class DensityReport:
 
 
 @dataclass
-class MeshReport:
+class CellReport(_ReportMixin):
+    """Per-face (cell) quality metrics."""
+
+    aspect_ratio_mean: float
+    aspect_ratio_std: float
+    aspect_ratio_max: float
+    aspect_ratio_p95: float
+    min_angle_mean: float  # degrees
+    min_angle_std: float
+    min_angle_min: float
+    min_angle_p05: float
+
+
+@dataclass
+class MeshReport(_ReportMixin):
     """Complete mesh quality report."""
 
     vertex_count: int
@@ -81,3 +127,4 @@ class MeshReport:
     normals: NormalReport
     topology: TopologyReport
     density: DensityReport
+    cell: CellReport | None = None
