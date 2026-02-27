@@ -39,6 +39,7 @@ def compute_pca(mesh: trimesh.Trimesh) -> tuple[np.ndarray, np.ndarray]:
 def compute_fingerprint(
     mesh: trimesh.Trimesh,
     _pca: tuple[np.ndarray, np.ndarray] | None = None,
+    _component_count: int | None = None,
 ) -> Fingerprint:
     """Extract geometric shape descriptors from a mesh.
 
@@ -47,6 +48,8 @@ def compute_fingerprint(
 
     Args:
         _pca: Optional pre-computed (axes, extents) from compute_pca().
+        _component_count: Optional pre-computed component count (avoids
+            duplicate mesh.split() call when topology already computed it).
     """
     pca_axes, pca_extents = _pca if _pca is not None else compute_pca(mesh)
 
@@ -69,12 +72,15 @@ def compute_fingerprint(
         thinness = 0.0
 
     # Connected components
-    try:
-        components = mesh.split()
-        component_count = len(components) if components else 1
-    except ModuleNotFoundError:
-        logger.warning("networkx not installed, assuming 1 component")
-        component_count = 1
+    if _component_count is not None:
+        component_count = _component_count
+    else:
+        try:
+            components = mesh.split()
+            component_count = len(components) if components else 1
+        except ModuleNotFoundError:
+            logger.warning("networkx not installed, assuming 1 component")
+            component_count = 1
 
     # Symmetry: ratio of 2nd/3rd PCA extents
     if pca_extents[2] > 1e-6:

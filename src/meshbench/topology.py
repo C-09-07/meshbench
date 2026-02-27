@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections import Counter
-
 import numpy as np
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import connected_components as sparse_cc
 import trimesh
 
 from meshbench._edges import EdgeData, edge_face_counts as _vec_edge_face_counts, vertex_valences
@@ -31,14 +31,18 @@ def genus(mesh: trimesh.Trimesh, _edge_data: EdgeData | None = None) -> int:
     return max(0, g)
 
 
-def valence_histogram(mesh: trimesh.Trimesh) -> dict[int, int]:
+def valence_histogram(
+    mesh: trimesh.Trimesh,
+    _edge_data: EdgeData | None = None,
+) -> dict[int, int]:
     """Compute vertex valence histogram.
 
     Returns dict mapping valence -> count of vertices with that valence.
+    Uses np.bincount instead of Counter for vectorized performance.
     """
-    valences = vertex_valences(mesh)
-    counter: Counter[int] = Counter(int(v) for v in valences)
-    return dict(sorted(counter.items()))
+    valences = vertex_valences(mesh, _edge_data)
+    bc = np.bincount(valences)
+    return {int(k): int(v) for k, v in enumerate(bc) if v > 0}
 
 
 def valence_stats(
@@ -92,16 +96,45 @@ def floating_vertices(mesh: trimesh.Trimesh) -> list[int]:
 
 
 def component_sizes(mesh: trimesh.Trimesh) -> list[tuple[int, int]]:
-    """Return (face_count, vertex_count) per connected component, sorted descending."""
-    try:
-        components = mesh.split()
-    except ModuleNotFoundError:
-        return [(mesh.faces.shape[0], mesh.vertices.shape[0])]
+    """Return (face_count, vertex_count) per connected component, sorted descending.
 
-    if not components:
-        return [(mesh.faces.shape[0], mesh.vertices.shape[0])]
+    Uses scipy.sparse connected_components on face adjacency instead of
+    mesh.split() which constructs full Trimesh submeshes.
+    """
+    n_faces = mesh.faces.shape[0]
+    if n_faces == 0:
+        return [(0, mesh.vertices.shape[0])]
 
-    sizes = [(c.faces.shape[0], c.vertices.shape[0]) for c in components]
+    adj_pairs = mesh.face_adjacency  # (N, 2) pairs of adjacent faces
+    if len(adj_pairs) == 0:
+        # Triangle soup — each face is its own component
+        return sorted(
+            [(1, len(set(mesh.faces[i].tolist()))) for i in range(n_faces)],
+            reverse=True,
+        )
+
+    rows = np.concatenate([adj_pairs[:, 0], adj_pairs[:, 1]])
+    cols = np.concatenate([adj_pairs[:, 1], adj_pairs[:, 0]])
+    data = np.ones(len(rows), dtype=np.int8)
+    graph = csr_matrix((data, (rows, cols)), shape=(n_faces, n_faces))
+    n_comp, labels = sparse_cc(graph, directed=False)
+
+    if n_comp == 1:
+        return [(n_faces, mesh.vertices.shape[0])]
+
+    # Vectorized face counts per component
+    face_counts = np.bincount(labels, minlength=n_comp)
+
+    # Vectorized vertex counts: deduplicate (component, vertex) pairs
+    vert_ids = mesh.faces.ravel()  # (3F,)
+    comp_ids = np.repeat(labels, 3)  # (3F,)
+    max_vert = mesh.vertices.shape[0]
+    pair_keys = comp_ids.astype(np.int64) * max_vert + vert_ids.astype(np.int64)
+    unique_keys = np.unique(pair_keys)
+    unique_comps = (unique_keys // max_vert).astype(np.intp)
+    vert_counts = np.bincount(unique_comps, minlength=n_comp)
+
+    sizes = list(zip(face_counts.tolist(), vert_counts.tolist()))
     sizes.sort(reverse=True)
     return sizes
 
@@ -115,7 +148,7 @@ def compute_topology_report(
     n_verts = mesh.vertices.shape[0]
 
     g = genus(mesh, _edge_data)
-    hist = valence_histogram(mesh)
+    hist = valence_histogram(mesh, _edge_data)
     mean, std, quad_ratio, outlier_count = valence_stats(mesh, _histogram=hist)
     degenerates = degenerate_faces(mesh)
     floating = floating_vertices(mesh)

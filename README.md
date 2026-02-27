@@ -2,12 +2,15 @@
 
 Geometric mesh quality analysis library. Extracts shape fingerprints, manifold integrity, normal consistency, topological metrics, per-face cell quality, and polycount efficiency from triangle meshes.
 
-Built on [trimesh](https://trimesh.org/), pure NumPy — no PyVista or VTK required.
+Built on [trimesh](https://trimesh.org/), pure NumPy — no PyVista or VTK required. Processes ~1M faces/sec on clean geometry.
 
 ## Installation
 
 ```bash
 pip install -e ".[dev]"
+
+# Optional: ~5x faster manifold analysis with numba
+pip install -e ".[fast]"
 ```
 
 Requires Python 3.11+.
@@ -139,6 +142,20 @@ tripo3d             10  60.0%   0.998   0.246    11.6     1.02       2       0  
 - **MeshyAI**: 100% watertight but extreme genus (mean 340.5) — topological noise from self-intersections. 57% have >4 disconnected components.
 - **Tripo3D**: Middle-of-the-road. 60% watertight, some genus issues, relatively clean otherwise.
 
+## Performance
+
+`audit()` uses vectorized NumPy/SciPy throughout, with an optional [numba](https://numba.pydata.org/) JIT kernel for the non-manifold vertex check (`pip install meshbench[fast]`).
+
+| Mesh | Faces | Time | Throughput |
+|------|-------|------|-----------|
+| Thingi10k STL (clean) | 22K | 0.024s | 950K f/s |
+| SF3D GLB (non-manifold) | 29K | 0.028s | 1.05M f/s |
+| TripoSG GLB (large) | 1.6M | 1.9s | 840K f/s |
+| Hunyuan3D GLB (messy, 50% degenerate) | 1.3M | 2.3s | 570K f/s |
+| TripoSG GLB (very large) | 4.6M | 6.2s | 750K f/s |
+
+Throughput scales with mesh complexity — clean manifold meshes hit ~1M f/s, heavily non-manifold AI meshes with degenerate faces drop to ~600K f/s. Without numba, expect roughly 5x slower manifold analysis on large meshes.
+
 ## Running Tests
 
 ```bash
@@ -154,8 +171,9 @@ src/meshbench/
 ├── __init__.py      # Public API: audit(), fingerprint(), manifold(), load()
 ├── types.py         # Dataclasses with _ReportMixin (to_dict)
 ├── loading.py       # Mesh file I/O with scene flattening
-├── _edges.py        # Vectorized edge utilities (shared)
+├── _edges.py        # Vectorized edge utilities + EdgeFaceMap (shared)
 ├── _entropy.py      # Shannon entropy helper (shared)
+├── _numba_kernels.py # Optional JIT-compiled kernels (numba)
 ├── _cell.py         # Per-face aspect ratio + min angle
 ├── density.py       # Polycount efficiency metrics
 ├── fingerprint.py   # PCA-based shape descriptors
@@ -164,4 +182,4 @@ src/meshbench/
 └── topology.py      # Genus, valence, degenerates, components
 ```
 
-`audit()` computes edges and PCA once, then threads shared data to all sub-reports.
+`audit()` builds an `EdgeFaceMap` once, derives edge data and PCA, then threads shared structures to all sub-reports — no redundant computation across modules.

@@ -77,11 +77,57 @@ def per_face_min_angle(mesh: trimesh.Trimesh) -> np.ndarray:
 
 
 def compute_cell_report(mesh: trimesh.Trimesh) -> CellReport:
-    """Compute per-face quality metrics."""
-    ar = per_face_aspect_ratio(mesh)
-    angles = per_face_min_angle(mesh)
+    """Compute per-face quality metrics.
 
-    # For aspect ratio stats, treat inf as finite max for percentile
+    Computes edge vectors and norms once, sharing across aspect ratio
+    and min angle calculations to avoid redundant work.
+    """
+    # Compute edge vectors once (was called 2x before)
+    e0, e1, e2 = _edge_vectors(mesh)
+    l0sq, l1sq, l2sq = _edge_lengths_squared(e0, e1, e2)
+
+    # --- Aspect ratio (reuses edge data) ---
+    longest_sq = np.maximum(np.maximum(l0sq, l1sq), l2sq)
+    areas = mesh.area_faces
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ar = longest_sq / (2.0 * areas)
+    ar[areas == 0] = np.inf
+
+    # --- Min angle (reuses edge norms from squared lengths) ---
+    # Pre-compute all 3 edge norms once (was computed 6x across 3 _angle calls)
+    n0 = np.sqrt(l0sq)
+    n1 = np.sqrt(l1sq)
+    n2 = np.sqrt(l2sq)
+
+    # angle at v0: between e0 and -e2
+    d0 = n0 * n2
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cos0 = np.sum(e0 * (-e2), axis=1) / d0
+    # angle at v1: between -e0 and e1
+    d1 = n0 * n1
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cos1 = np.sum((-e0) * e1, axis=1) / d1
+    # angle at v2: between e2 and -e1
+    d2 = n2 * n1
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cos2 = np.sum(e2 * (-e1), axis=1) / d2
+
+    cos0 = np.clip(cos0, -1.0, 1.0)
+    cos1 = np.clip(cos1, -1.0, 1.0)
+    cos2 = np.clip(cos2, -1.0, 1.0)
+
+    a0 = np.degrees(np.arccos(cos0))
+    a1 = np.degrees(np.arccos(cos1))
+    a2 = np.degrees(np.arccos(cos2))
+
+    # Zero-length edges → 0 angle
+    a0[d0 == 0] = 0.0
+    a1[d1 == 0] = 0.0
+    a2[d2 == 0] = 0.0
+
+    angles = np.minimum(np.minimum(a0, a1), a2)
+
+    # --- Stats ---
     ar_finite = ar[np.isfinite(ar)]
     if len(ar_finite) == 0:
         ar_finite = np.array([np.inf])

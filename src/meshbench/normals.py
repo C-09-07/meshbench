@@ -56,11 +56,7 @@ def dominant_normal(
     bin_indices = np.digitize(dots, bin_edges) - 1
     bin_indices = np.clip(bin_indices, 0, 31)
 
-    weighted_counts = np.zeros(32)
-    for i in range(32):
-        mask = bin_indices == i
-        if np.any(mask):
-            weighted_counts[i] = face_areas[mask].sum()
+    weighted_counts = np.bincount(bin_indices, weights=face_areas, minlength=32)[:32]
 
     total = weighted_counts.sum()
     if total < 1e-12:

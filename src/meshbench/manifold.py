@@ -2,13 +2,24 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
-
 import numpy as np
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import connected_components as sparse_cc
 import trimesh
 
-from meshbench._edges import EdgeData, _build_sorted_edges, edge_face_counts as _vec_edge_face_counts
+from meshbench._edges import (
+    EdgeData,
+    EdgeFaceMap,
+    _build_sorted_edges,
+    edge_face_counts as _vec_edge_face_counts,
+)
 from meshbench.types import ManifoldReport
+
+try:
+    from meshbench._numba_kernels import _check_vertices_numba
+    _HAS_NUMBA = True
+except ImportError:
+    _HAS_NUMBA = False
 
 
 def _get_edge_data(
@@ -37,35 +48,27 @@ def boundary_loops(
     mesh: trimesh.Trimesh,
     _edge_data: EdgeData | None = None,
 ) -> int:
-    """Count closed loops formed by boundary edges (= number of holes)."""
+    """Count closed loops formed by boundary edges (= number of holes).
+
+    Uses scipy.sparse connected_components for O(V+E) compiled C performance
+    instead of Python-level BFS.
+    """
     b_edges = boundary_edges(mesh, _edge_data)
     if len(b_edges) == 0:
         return 0
 
-    # Build adjacency from boundary edges
-    adj: dict[int, list[int]] = defaultdict(list)
-    for v0, v1 in b_edges:
-        adj[int(v0)].append(int(v1))
-        adj[int(v1)].append(int(v0))
+    # Remap vertex IDs to compact 0..n-1 range for sparse matrix
+    unique_verts, inv = np.unique(b_edges, return_inverse=True)
+    remapped = inv.reshape(b_edges.shape)  # (B, 2) with compact IDs
+    n = len(unique_verts)
 
-    # Count connected components via BFS
-    visited: set[int] = set()
-    loop_count = 0
-    for start in adj:
-        if start in visited:
-            continue
-        loop_count += 1
-        queue = [start]
-        while queue:
-            node = queue.pop()
-            if node in visited:
-                continue
-            visited.add(node)
-            for neighbor in adj[node]:
-                if neighbor not in visited:
-                    queue.append(neighbor)
+    rows = np.concatenate([remapped[:, 0], remapped[:, 1]])
+    cols = np.concatenate([remapped[:, 1], remapped[:, 0]])
+    data = np.ones(len(rows), dtype=np.int8)
 
-    return loop_count
+    adj = csr_matrix((data, (rows, cols)), shape=(n, n))
+    n_components, _ = sparse_cc(adj, directed=False)
+    return int(n_components)
 
 
 def non_manifold_edges(
@@ -80,7 +83,10 @@ def non_manifold_edges(
     return edges[counts > 2]
 
 
-def non_manifold_vertices(mesh: trimesh.Trimesh) -> list[int]:
+def non_manifold_vertices(
+    mesh: trimesh.Trimesh,
+    _edge_face_map: EdgeFaceMap | None = None,
+) -> list[int]:
     """Return vertices where the face fan doesn't form a single disc/cone.
 
     A vertex is non-manifold if the faces around it form more than one
@@ -89,6 +95,10 @@ def non_manifold_vertices(mesh: trimesh.Trimesh) -> list[int]:
     Strategy: build a global edge→face-pair lookup (vectorized), then for each
     vertex that has >1 incident face, check connectivity of its face fan using
     the pre-built lookup and a simple union-find.
+
+    Args:
+        _edge_face_map: Optional pre-computed EdgeFaceMap to avoid redundant
+            edge sorting (from build_edge_face_map).
     """
     faces = mesh.faces
     n_faces = faces.shape[0]
@@ -96,20 +106,24 @@ def non_manifold_vertices(mesh: trimesh.Trimesh) -> list[int]:
         return []
 
     # --- Build edge → face pairs (vectorized) ---
-    all_edges = _build_sorted_edges(faces)  # (3F, 2)
-    face_ids = np.tile(np.arange(n_faces), 3)
+    if _edge_face_map is not None:
+        sorted_edges, sorted_face_ids, edge_starts, edge_ends = _edge_face_map
+    else:
+        all_edges = _build_sorted_edges(faces)  # (3F, 2)
+        face_ids = np.tile(np.arange(n_faces), 3)
 
-    max_v = int(faces.max()) + 1
-    edge_keys = all_edges[:, 0].astype(np.int64) * max_v + all_edges[:, 1].astype(np.int64)
+        max_v = int(faces.max()) + 1
+        edge_keys = all_edges[:, 0].astype(np.int64) * max_v + all_edges[:, 1].astype(np.int64)
 
-    order = np.argsort(edge_keys)
-    sorted_keys = edge_keys[order]
-    sorted_face_ids = face_ids[order]
-    sorted_edges = all_edges[order]
+        order = np.argsort(edge_keys)
+        sorted_face_ids = face_ids[order]
+        sorted_edges = all_edges[order]
 
-    changes = np.where(np.diff(sorted_keys) != 0)[0] + 1
-    edge_starts = np.concatenate([[0], changes])
-    edge_ends = np.concatenate([changes, [len(sorted_keys)]])
+        sorted_keys = edge_keys[order]
+        changes = np.where(np.diff(sorted_keys) != 0)[0] + 1
+        edge_starts = np.concatenate([[0], changes])
+        edge_ends = np.concatenate([changes, [len(sorted_keys)]])
+
     edge_sizes = edge_ends - edge_starts
 
     # --- Vectorized: edges with exactly 2 faces (the common case) ---
@@ -180,11 +194,6 @@ def non_manifold_vertices(mesh: trimesh.Trimesh) -> list[int]:
     a_ends = np.concatenate([a_changes, [len(adj_v)]])
     a_verts = adj_v[a_starts]
 
-    # Build lookup: vertex → (start, end) in adj arrays
-    a_lookup: dict[int, tuple[int, int]] = {}
-    for i in range(len(a_verts)):
-        a_lookup[int(a_verts[i])] = (int(a_starts[i]), int(a_ends[i]))
-
     # --- Build vertex → incident faces ---
     vert_indices = faces.ravel()
     face_indices = np.repeat(np.arange(n_faces), 3)
@@ -201,7 +210,28 @@ def non_manifold_vertices(mesh: trimesh.Trimesh) -> list[int]:
     if len(check_indices) == 0:
         return []
 
-    # --- Check connectivity per vertex using inline union-find ---
+    # --- Check connectivity per vertex ---
+    if _HAS_NUMBA:
+        # JIT-compiled path: binary search on sorted arrays, no Python dicts
+        result = _check_vertices_numba(
+            check_indices.astype(np.int64),
+            v_group_verts.astype(np.int64),
+            v_starts.astype(np.int64),
+            v_ends.astype(np.int64),
+            sf.astype(np.int64),
+            a_verts.astype(np.int64),
+            a_starts.astype(np.int64),
+            a_ends.astype(np.int64),
+            adj_fa.astype(np.int64),
+            adj_fb.astype(np.int64),
+        )
+        return result.tolist()
+
+    # Python fallback: dict-based lookup + inline union-find
+    a_lookup: dict[int, tuple[int, int]] = {}
+    for i in range(len(a_verts)):
+        a_lookup[int(a_verts[i])] = (int(a_starts[i]), int(a_ends[i]))
+
     non_manifold = []
     for idx in check_indices:
         v = int(v_group_verts[idx])
@@ -224,20 +254,18 @@ def non_manifold_vertices(mesh: trimesh.Trimesh) -> list[int]:
         for i in range(n):
             face_map[int(incident[i])] = i
 
-        # Inline union-find (avoids function call overhead)
+        # Inline union-find
         parent = list(range(n))
 
         for k in range(len(local_fa)):
             la = face_map.get(int(local_fa[k]), -1)
             lb = face_map.get(int(local_fb[k]), -1)
             if la >= 0 and lb >= 0:
-                # find(la)
                 x = la
                 while parent[x] != x:
                     parent[x] = parent[parent[x]]
                     x = parent[x]
                 ra = x
-                # find(lb)
                 x = lb
                 while parent[x] != x:
                     parent[x] = parent[parent[x]]
@@ -246,7 +274,6 @@ def non_manifold_vertices(mesh: trimesh.Trimesh) -> list[int]:
                 if ra != rb:
                     parent[ra] = rb
 
-        # Count components
         roots = set()
         for i in range(n):
             x = i
@@ -263,6 +290,7 @@ def non_manifold_vertices(mesh: trimesh.Trimesh) -> list[int]:
 def compute_manifold_report(
     mesh: trimesh.Trimesh,
     _edge_data: EdgeData | None = None,
+    _edge_face_map: EdgeFaceMap | None = None,
 ) -> ManifoldReport:
     """Compute a full ManifoldReport for a mesh."""
     edge_data = _get_edge_data(mesh, _edge_data)
@@ -272,7 +300,7 @@ def compute_manifold_report(
     b_edges = boundary_edges(mesh, edge_data)
     b_loops = boundary_loops(mesh, edge_data)
     nm_edges = non_manifold_edges(mesh, edge_data)
-    nm_verts = non_manifold_vertices(mesh)
+    nm_verts = non_manifold_vertices(mesh, _edge_face_map=_edge_face_map)
 
     return ManifoldReport(
         is_watertight=len(b_edges) == 0,
