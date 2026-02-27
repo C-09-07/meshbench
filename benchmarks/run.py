@@ -10,7 +10,11 @@ from pathlib import Path
 
 from benchmarks.aggregate import AggregateStats, compute_aggregate, compute_delta
 from benchmarks.corpus import load_corpus
-from benchmarks.failmodes import classify_failures, source_failure_summary
+from benchmarks.failmodes import (
+    classify,
+    source_characteristic_summary,
+    source_defect_summary,
+)
 from benchmarks.report import build_full_report, format_table, write_json
 
 logging.basicConfig(
@@ -24,18 +28,19 @@ def build_source_entry(
     reports: dict[str, dict],
     reference_agg: AggregateStats | None = None,
 ) -> dict:
-    """Build a source dict with meshes, aggregate, failure summary, and optional delta."""
+    """Build a source dict with meshes, aggregate, summaries, and optional delta."""
     agg = compute_aggregate(reports)
 
-    # Inject per-mesh failure fingerprints
+    # Inject per-mesh classification
     for name, report in reports.items():
-        report["_failure_fingerprint"] = classify_failures(report).to_dict()
+        report["_classification"] = classify(report).to_dict()
 
     entry: dict = {
         "mesh_count": agg.mesh_count,
         "meshes": reports,
         "aggregate": asdict(agg),
-        "failure_summary": source_failure_summary(reports),
+        "defect_summary": source_defect_summary(reports),
+        "characteristic_summary": source_characteristic_summary(reports),
     }
     if reference_agg is not None:
         entry["delta"] = compute_delta(agg, reference_agg)

@@ -64,43 +64,17 @@ def write_json(report: dict, output_dir: Path) -> Path:
 
 # -- Summary table --
 
-# (label, format_spec, width)
-_TABLE_COLUMNS = [
-    ("Source", 16),
-    ("N", 4),
-    ("WT%", 5),
-    ("Wind", 6),
-    ("BfDiv", 6),
-    ("Genus", 6),
-    ("ValStd", 7),
-    ("Degen", 6),
-    ("Float", 6),
-    ("FDV", 6),
-    ("Errs", 5),
-    ("Warn", 5),
-]
-
-
-def _format_row(name: str, n: int, agg: dict, fail: dict) -> str:
-    # Count total errors/warnings across all failure codes
-    errs = sum(e["count"] for e in fail.values() if e.get("severity_max") == "error")
-    warns = sum(e["count"] for e in fail.values() if e.get("severity_max") == "warning")
-
-    cells = [
-        f"{name[:16]:<16s}",
-        f"{n:>4d}",
-        f"{agg.get('watertight_ratio', 0):>5.1%}",
-        f"{agg.get('mean_winding_consistency', 0):>6.3f}",
-        f"{agg.get('mean_backface_divergence', 0):>6.3f}",
-        f"{agg.get('mean_genus', 0):>6.1f}",
-        f"{agg.get('mean_valence_std', 0):>7.2f}",
-        f"{agg.get('mean_degenerate_faces', 0):>6.0f}",
-        f"{agg.get('mean_floating_vertices', 0):>6.0f}",
-        f"{agg.get('mean_face_density_variance', 0):>6.3f}",
-        f"{errs:>5d}",
-        f"{warns:>5d}",
-    ]
-    return "  ".join(cells)
+def _defect_counts(src: dict) -> tuple[int, int]:
+    """Count total meshes with defects and total defect instances."""
+    meshes_with = 0
+    total = 0
+    for mesh in src.get("meshes", {}).values():
+        cls = mesh.get("_classification", {})
+        n = cls.get("defect_count", 0)
+        if n > 0:
+            meshes_with += 1
+            total += n
+    return meshes_with, total
 
 
 def format_table(
@@ -109,17 +83,6 @@ def format_table(
     reference_name: str | None = None,
 ) -> str:
     """Format sources dict into a summary comparison table string."""
-    # Build header
-    parts = []
-    for label, width in _TABLE_COLUMNS:
-        if label == "Source":
-            parts.append(f"{label:<{width}s}")
-        else:
-            parts.append(f"{label:>{width}s}")
-    header = "  ".join(parts)
-
-    lines = [header, "-" * len(header)]
-
     # Reference first, then alphabetical
     ref = reference_name or "reference"
     ordered = []
@@ -127,10 +90,130 @@ def format_table(
         ordered.append(ref)
     ordered.extend(k for k in sorted(sources) if k != ref)
 
+    # ── Metrics table ──
+    metrics_cols = [
+        ("Source", 16),
+        ("N", 4),
+        ("WT%", 5),
+        ("Wind", 6),
+        ("BfDiv", 6),
+        ("Genus", 6),
+        ("ValStd", 7),
+        ("Degen", 8),
+        ("Float", 6),
+        ("FDV", 6),
+    ]
+    parts = []
+    for label, width in metrics_cols:
+        if label == "Source":
+            parts.append(f"{label:<{width}s}")
+        else:
+            parts.append(f"{label:>{width}s}")
+    header = "  ".join(parts)
+    lines = ["METRICS", header, "-" * len(header)]
+
     for name in ordered:
         src = sources[name]
         agg = src.get("aggregate", {})
-        fail = src.get("failure_summary", {})
-        lines.append(_format_row(name, src.get("mesh_count", 0), agg, fail))
+        cells = [
+            f"{name[:16]:<16s}",
+            f"{src.get('mesh_count', 0):>4d}",
+            f"{agg.get('watertight_ratio', 0):>5.1%}",
+            f"{agg.get('mean_winding_consistency', 0):>6.3f}",
+            f"{agg.get('mean_backface_divergence', 0):>6.3f}",
+            f"{agg.get('mean_genus', 0):>6.1f}",
+            f"{agg.get('mean_valence_std', 0):>7.2f}",
+            f"{agg.get('mean_degenerate_faces', 0):>8.0f}",
+            f"{agg.get('mean_floating_vertices', 0):>6.0f}",
+            f"{agg.get('mean_face_density_variance', 0):>6.3f}",
+        ]
+        lines.append("  ".join(cells))
+
+    # ── Defects table ──
+    defect_cols = [
+        ("Source", 16),
+        ("N", 4),
+        ("Clean", 7),
+        ("NM Geom", 8),
+        ("Degen", 8),
+        ("Winding", 8),
+        ("Float", 8),
+    ]
+    parts = []
+    for label, width in defect_cols:
+        if label == "Source":
+            parts.append(f"{label:<{width}s}")
+        else:
+            parts.append(f"{label:>{width}s}")
+    dh = "  ".join(parts)
+    lines.append("")
+    lines.append("DEFECTS (structural breakage)")
+    lines.append(dh)
+    lines.append("-" * len(dh))
+
+    for name in ordered:
+        src = sources[name]
+        n = src.get("mesh_count", 0)
+        defects = src.get("defect_summary", {})
+
+        def _ratio(code: str) -> str:
+            r = defects.get(code, {}).get("ratio", 0)
+            return f"{r:>7.0%}" if r > 0 else f"{'—':>8s}"
+
+        meshes_with, _ = _defect_counts(src)
+        clean_pct = (n - meshes_with) / n if n > 0 else 0
+
+        cells = [
+            f"{name[:16]:<16s}",
+            f"{n:>4d}",
+            f"{clean_pct:>7.0%}",
+            _ratio("non_manifold_geometry"),
+            _ratio("degenerate_faces"),
+            _ratio("inconsistent_winding"),
+            _ratio("floating_vertices"),
+        ]
+        lines.append("  ".join(cells))
+
+    # ── Characteristics table ──
+    char_cols = [
+        ("Source", 16),
+        ("Open%", 7),
+        ("Genus>0", 8),
+        ("Multi", 7),
+        ("FDV med", 8),
+    ]
+    parts = []
+    for label, width in char_cols:
+        if label == "Source":
+            parts.append(f"{label:<{width}s}")
+        else:
+            parts.append(f"{label:>{width}s}")
+    ch = "  ".join(parts)
+    lines.append("")
+    lines.append("CHARACTERISTICS (context-dependent)")
+    lines.append(ch)
+    lines.append("-" * len(ch))
+
+    for name in ordered:
+        src = sources[name]
+        chars = src.get("characteristic_summary", {})
+
+        def _cratio(code: str) -> float:
+            return chars.get(code, {}).get("ratio", 0)
+
+        # Compute median FDV from per-mesh data
+        fdvs = [m["density"]["face_density_variance"]
+                for m in src.get("meshes", {}).values()
+                if "density" in m]
+        med_fdv = float(np.median(fdvs)) if fdvs else 0.0
+
+        cells = [
+            f"{name[:16]:<16s}",
+            f"{_cratio('open_boundary'):>7.0%}",
+            f"{_cratio('genus'):>8.0%}",
+            f"{_cratio('multi_component'):>7.0%}",
+            f"{med_fdv:>8.3f}",
+        ]
+        lines.append("  ".join(cells))
 
     return "\n".join(lines)

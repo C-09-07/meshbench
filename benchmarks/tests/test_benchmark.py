@@ -12,7 +12,12 @@ import trimesh
 
 from benchmarks.aggregate import AggregateStats, compute_aggregate, compute_delta
 from benchmarks.corpus import audit_directory, discover_meshes, load_corpus, load_mesh, stem_name
-from benchmarks.failmodes import FailureFingerprint, classify_failures, source_failure_summary
+from benchmarks.failmodes import (
+    MeshFingerprint,
+    classify,
+    source_characteristic_summary,
+    source_defect_summary,
+)
 from benchmarks.report import NumpyEncoder, build_full_report, format_table, write_json
 
 
@@ -182,7 +187,7 @@ class TestBuildFullReport:
         }
         report = build_full_report(sources)
         assert "timestamp" in report
-        assert report["meshbench_version"] == "0.1.0"
+        assert report["meshbench_version"] == "1.0.0"
         assert report["mesh_count"] == 2
         assert "reference" in report["sources"]
 
@@ -198,44 +203,55 @@ class TestBuildFullReport:
 
 
 class TestFormatTable:
-    def test_header_and_rows(self, sample_reports):
+    def test_has_all_sections(self, sample_reports):
         agg = compute_aggregate(sample_reports)
         sources = {
-            "reference": {"mesh_count": 2, "aggregate": asdict(agg), "failure_summary": {}},
+            "reference": {
+                "mesh_count": 2,
+                "aggregate": asdict(agg),
+                "defect_summary": source_defect_summary(sample_reports),
+                "characteristic_summary": source_characteristic_summary(sample_reports),
+                "meshes": sample_reports,
+            },
         }
         table = format_table(sources)
-        lines = table.strip().split("\n")
-        assert len(lines) == 3  # header, separator, 1 row
-        assert "reference" in lines[2]
-        assert "Source" in lines[0]
-        assert "Errs" in lines[0]
+        assert "METRICS" in table
+        assert "DEFECTS" in table
+        assert "CHARACTERISTICS" in table
+        assert "reference" in table
 
     def test_ordering_reference_first(self, sample_reports):
         agg = compute_aggregate(sample_reports)
         agg_dict = asdict(agg)
+        base = {
+            "aggregate": agg_dict,
+            "defect_summary": {},
+            "characteristic_summary": {},
+            "meshes": sample_reports,
+        }
         sources = {
-            "zebra": {"mesh_count": 1, "aggregate": agg_dict, "failure_summary": {}},
-            "reference": {"mesh_count": 2, "aggregate": agg_dict, "failure_summary": {}},
-            "alpha": {"mesh_count": 1, "aggregate": agg_dict, "failure_summary": {}},
+            "zebra": {"mesh_count": 1, **base},
+            "reference": {"mesh_count": 2, **base},
+            "alpha": {"mesh_count": 1, **base},
         }
         table = format_table(sources)
-        lines = table.strip().split("\n")
-        data_lines = lines[2:]
-        assert "reference" in data_lines[0]
-        assert "alpha" in data_lines[1]
-        assert "zebra" in data_lines[2]
-
-    def test_custom_reference_name(self, sample_reports):
-        agg_dict = asdict(compute_aggregate(sample_reports))
-        sources = {
-            "abc": {"mesh_count": 2, "aggregate": agg_dict, "failure_summary": {}},
-            "meshy": {"mesh_count": 1, "aggregate": agg_dict, "failure_summary": {}},
-        }
-        table = format_table(sources, reference_name="abc")
-        lines = table.strip().split("\n")
-        data_lines = lines[2:]
-        assert "abc" in data_lines[0]
-        assert "meshy" in data_lines[1]
+        # Find the METRICS data rows
+        lines = table.split("\n")
+        metrics_rows = []
+        in_metrics = False
+        for line in lines:
+            if line == "METRICS":
+                in_metrics = True
+                continue
+            if in_metrics and line.startswith("-"):
+                continue
+            if in_metrics and line == "":
+                break
+            if in_metrics and not line.startswith("Source"):
+                metrics_rows.append(line)
+        assert "reference" in metrics_rows[0]
+        assert "alpha" in metrics_rows[1]
+        assert "zebra" in metrics_rows[2]
 
 
 # -- corpus.py tests --
@@ -306,30 +322,68 @@ class TestLoadCorpusMultiTier:
 # -- failmodes.py tests --
 
 
-class TestClassifyFailures:
-    def test_clean_mesh(self, sample_reports):
-        fp = classify_failures(sample_reports["mesh_a"])
-        # Clean mesh: should have no errors or warnings
-        assert fp.error_count == 0
-        assert fp.warning_count == 0
+class TestClassify:
+    def test_clean_mesh_no_defects(self, sample_reports):
+        fp = classify(sample_reports["mesh_a"])
+        assert fp.defect_count == 0
+        assert not fp.has_defects
 
-    def test_non_manifold(self, sample_reports):
-        fp = classify_failures(sample_reports["mesh_b"])
-        codes = [m.code for m in fp.modes]
-        assert "non_manifold_geometry" in codes
-        assert "open_boundary" in codes
+    def test_clean_mesh_has_characteristics(self, sample_reports):
+        fp = classify(sample_reports["mesh_a"])
+        codes = [o.code for o in fp.characteristics]
+        # Should have watertight, density_variance, backface_divergence, valence_std
+        assert "watertight" in codes
+        assert "density_variance" in codes
 
-    def test_disconnected_components(self, sample_reports):
-        fp = classify_failures(sample_reports["mesh_b"])
-        codes = [m.code for m in fp.modes]
-        assert "disconnected_components" in codes
+    def test_non_manifold_is_defect(self, sample_reports):
+        fp = classify(sample_reports["mesh_b"])
+        defect_codes = [o.code for o in fp.defects]
+        assert "non_manifold_geometry" in defect_codes
 
-    def test_degenerate_faces(self, sample_reports):
-        fp = classify_failures(sample_reports["mesh_b"])
-        codes = [m.code for m in fp.modes]
-        assert "degenerate_faces" in codes
+    def test_degenerate_is_defect(self, sample_reports):
+        fp = classify(sample_reports["mesh_b"])
+        defect_codes = [o.code for o in fp.defects]
+        assert "degenerate_faces" in defect_codes
 
-    def test_severe_winding(self):
+    def test_open_boundary_is_characteristic(self, sample_reports):
+        fp = classify(sample_reports["mesh_b"])
+        char_codes = [o.code for o in fp.characteristics]
+        assert "open_boundary" in char_codes
+        # NOT in defects
+        defect_codes = [o.code for o in fp.defects]
+        assert "open_boundary" not in defect_codes
+
+    def test_genus_is_characteristic(self, sample_reports):
+        fp = classify(sample_reports["mesh_b"])
+        char_codes = [o.code for o in fp.characteristics]
+        assert "genus" in char_codes
+
+    def test_multi_component_is_characteristic(self, sample_reports):
+        fp = classify(sample_reports["mesh_b"])
+        char_codes = [o.code for o in fp.characteristics]
+        assert "multi_component" in char_codes
+
+    def test_density_variance_is_characteristic(self):
+        """Even extreme FDV is a characteristic, not a defect."""
+        report = {
+            "face_count": 100,
+            "manifold": {"is_watertight": True, "boundary_edge_count": 0,
+                         "boundary_loop_count": 0, "non_manifold_edge_count": 0,
+                         "non_manifold_vertex_count": 0},
+            "normals": {"winding_consistency": 1.0, "flipped_count": 0,
+                        "backface_divergence": 0.1},
+            "topology": {"genus": 0, "valence_mean": 4.0, "valence_std": 0.5,
+                         "degenerate_face_count": 0, "floating_vertex_count": 0,
+                         "component_count": 1},
+            "density": {"vertices_per_area": 100.0, "face_density_variance": 50.0},
+            "fingerprint": {"hollowness": 0.5, "thinness": 1.0, "normal_entropy": 3.0},
+        }
+        fp = classify(report)
+        assert fp.defect_count == 0
+        char_codes = [o.code for o in fp.characteristics]
+        assert "density_variance" in char_codes
+
+    def test_severe_winding_is_defect(self):
         report = {
             "face_count": 100,
             "manifold": {"is_watertight": True, "boundary_edge_count": 0,
@@ -343,52 +397,48 @@ class TestClassifyFailures:
             "density": {"vertices_per_area": 100.0, "face_density_variance": 0.01},
             "fingerprint": {"hollowness": 0.5, "thinness": 1.0, "normal_entropy": 3.0},
         }
-        fp = classify_failures(report)
-        winding_modes = [m for m in fp.modes if m.code == "inconsistent_winding"]
-        assert len(winding_modes) == 1
-        assert winding_modes[0].severity == "error"
+        fp = classify(report)
+        defect_codes = [o.code for o in fp.defects]
+        assert "inconsistent_winding" in defect_codes
+        winding = [o for o in fp.defects if o.code == "inconsistent_winding"][0]
+        assert winding.severity == "error"
 
-    def test_extreme_density_variance(self):
-        report = {
-            "face_count": 100,
-            "manifold": {"is_watertight": True, "boundary_edge_count": 0,
-                         "boundary_loop_count": 0, "non_manifold_edge_count": 0,
-                         "non_manifold_vertex_count": 0},
-            "normals": {"winding_consistency": 1.0, "flipped_count": 0,
-                        "backface_divergence": 0.1},
-            "topology": {"genus": 0, "valence_mean": 4.0, "valence_std": 0.5,
-                         "degenerate_face_count": 0, "floating_vertex_count": 0,
-                         "component_count": 1},
-            "density": {"vertices_per_area": 100.0, "face_density_variance": 2.5},
-            "fingerprint": {"hollowness": 0.5, "thinness": 1.0, "normal_entropy": 3.0},
-        }
-        fp = classify_failures(report)
-        codes = [m.code for m in fp.modes]
-        assert "extreme_density_variance" in codes
-
-    def test_dominant_category(self, sample_reports):
-        fp = classify_failures(sample_reports["mesh_b"])
-        # mesh_b has multiple manifold + topology issues
-        assert fp.dominant_category in ("manifold", "topology")
-
-    def test_to_dict_roundtrip(self, sample_reports):
-        fp = classify_failures(sample_reports["mesh_b"])
+    def test_to_dict_structure(self, sample_reports):
+        fp = classify(sample_reports["mesh_b"])
         d = fp.to_dict()
-        assert isinstance(d["modes"], list)
-        assert isinstance(d["error_count"], int)
-        assert isinstance(d["dominant_category"], str)
+        assert isinstance(d["defects"], list)
+        assert isinstance(d["characteristics"], list)
+        assert isinstance(d["defect_count"], int)
+        assert d["defect_count"] > 0
+        # Defects have severity, characteristics don't
+        assert "severity" in d["defects"][0]
+        assert "severity" not in d["characteristics"][0]
 
 
-class TestSourceFailureSummary:
+class TestSourceDefectSummary:
     def test_frequency_table(self, sample_reports):
-        summary = source_failure_summary(sample_reports)
-        # mesh_a is clean, mesh_b has issues — so each issue appears in 1/2 meshes
+        summary = source_defect_summary(sample_reports)
+        # mesh_a is clean, mesh_b has defects — each defect in 1/2 meshes
         assert "non_manifold_geometry" in summary
         assert summary["non_manifold_geometry"]["count"] == 1
         assert summary["non_manifold_geometry"]["ratio"] == 0.5
 
     def test_empty(self):
-        assert source_failure_summary({}) == {}
+        assert source_defect_summary({}) == {}
+
+
+class TestSourceCharacteristicSummary:
+    def test_frequency_table(self, sample_reports):
+        summary = source_characteristic_summary(sample_reports)
+        # Both meshes have density_variance characteristic
+        assert "density_variance" in summary
+        assert summary["density_variance"]["ratio"] == 1.0
+        # mesh_b has open_boundary, mesh_a has watertight
+        assert "open_boundary" in summary
+        assert summary["open_boundary"]["ratio"] == 0.5
+
+    def test_empty(self):
+        assert source_characteristic_summary({}) == {}
 
 
 # -- aggregate.py tests --
@@ -444,16 +494,18 @@ class TestJsonRoundtrip:
     def test_roundtrip(self, tmp_mesh_dir: Path, tmp_path: Path):
         results = audit_directory(tmp_mesh_dir)
         agg = compute_aggregate(results)
-        fail_summary = source_failure_summary(results)
-        # Inject per-mesh fingerprints
+        defect_summary = source_defect_summary(results)
+        char_summary = source_characteristic_summary(results)
+        # Inject per-mesh classification
         for name, report in results.items():
-            report["_failure_fingerprint"] = classify_failures(report).to_dict()
+            report["_classification"] = classify(report).to_dict()
         sources = {
             "test": {
                 "mesh_count": agg.mesh_count,
                 "meshes": results,
                 "aggregate": asdict(agg),
-                "failure_summary": fail_summary,
+                "defect_summary": defect_summary,
+                "characteristic_summary": char_summary,
             },
         }
         report = build_full_report(sources)
@@ -463,8 +515,11 @@ class TestJsonRoundtrip:
         assert loaded["mesh_count"] == 2
         assert loaded["sources"]["test"]["mesh_count"] == 2
         assert isinstance(loaded["sources"]["test"]["aggregate"]["mean_hollowness"], float)
-        # Failure data roundtrips
-        assert "failure_summary" in loaded["sources"]["test"]
+        # Classification data roundtrips
+        assert "defect_summary" in loaded["sources"]["test"]
+        assert "characteristic_summary" in loaded["sources"]["test"]
         first_mesh = list(loaded["sources"]["test"]["meshes"].values())[0]
-        assert "_failure_fingerprint" in first_mesh
-        assert isinstance(first_mesh["_failure_fingerprint"]["error_count"], int)
+        assert "_classification" in first_mesh
+        assert isinstance(first_mesh["_classification"]["defect_count"], int)
+        assert isinstance(first_mesh["_classification"]["defects"], list)
+        assert isinstance(first_mesh["_classification"]["characteristics"], list)
