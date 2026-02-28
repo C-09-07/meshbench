@@ -1,4 +1,4 @@
-"""Tests for meshbench.export (JSON sidecar + viewer file generation)."""
+"""Tests for meshview.export (JSON sidecar + viewer file generation)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import numpy as np
 import trimesh
 
 import meshbench
-from meshbench.export import build_defects_json, export_viewer_data
+from meshview.export import build_defects_json, export_viewer_data
 
 
 class TestBuildDefectsJson:
