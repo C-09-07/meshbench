@@ -58,6 +58,31 @@ class FixConfig:
 
 
 @dataclass
+class DecimateConfig:
+    """Configuration for QEM decimation."""
+
+    target_faces: int | None = None
+    target_ratio: float | None = None  # 0.0–1.0
+    feature_angle: float = 30.0  # degrees: sharper edges preserved
+    preserve_boundary: bool = True
+    quality_threshold: float = 0.3
+
+
+@dataclass
+class DecimateResult(_ReportMixin):
+    """Result of a decimation operation."""
+
+    backend: Backend
+    faces_before: int
+    faces_after: int
+    vertices_before: int
+    vertices_after: int
+    feature_edges_before: int
+    feature_edges_after: int
+    duration_ms: float
+
+
+@dataclass
 class FixResult(_ReportMixin):
     """Result of a full repair pipeline run."""
 

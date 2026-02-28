@@ -13,10 +13,13 @@ dependencies = [
     "trimesh>=4.0",
     "numpy>=1.26",
     "scipy>=1.11",
+    "fast-simplification>=0.1.13",
 ]
 
 [project.optional-dependencies]
-pymeshlab = ["pymeshlab>=2023.12"]
+pymeshlab = [
+    "pymeshlab>=2023.12",
+]
 manifold = ["manifold3d>=2.4"]
 remesh = ["pynanoinstantmeshes>=0.0.3"]
 all = [

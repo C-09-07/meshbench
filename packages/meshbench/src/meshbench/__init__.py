@@ -13,6 +13,17 @@ import numpy as np
 import trimesh
 
 from meshbench._cell import CellArrays, compute_cell_arrays, compute_cell_report
+from meshbench.curvature import (
+    compute_curvature_report,
+    discrete_gaussian_curvature,
+    discrete_mean_curvature,
+    per_face_curvature,
+)
+from meshbench.features import (
+    compute_feature_report,
+    dihedral_angles,
+    feature_edges,
+)
 from meshbench._edges import (
     EdgeData,
     EdgeFaceMap,
@@ -41,8 +52,10 @@ from meshbench.topology import (
 from meshbench.types import (
     CellReport,
     Check,
+    CurvatureReport,
     Defects,
     DensityReport,
+    FeatureReport,
     Fingerprint,
     ManifoldReport,
     MeshReport,
@@ -165,14 +178,23 @@ def score(report: MeshReport, profile: str = "print") -> ScoreCard:
 
 __all__ = [
     "audit",
+    "compute_curvature_report",
+    "compute_feature_report",
+    "dihedral_angles",
+    "discrete_gaussian_curvature",
+    "discrete_mean_curvature",
+    "feature_edges",
     "fingerprint",
     "load",
     "manifold",
+    "per_face_curvature",
     "score",
     "CellReport",
     "Check",
+    "CurvatureReport",
     "Defects",
     "DensityReport",
+    "FeatureReport",
     "Fingerprint",
     "ManifoldReport",
     "MeshReport",

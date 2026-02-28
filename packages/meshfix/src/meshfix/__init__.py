@@ -20,6 +20,7 @@ import trimesh
 from meshbench.types import MeshReport
 
 from meshfix._backends import available_backends
+from meshfix._decimate import decimate
 from meshfix._normal_ops import fix_normals, fix_winding
 from meshfix._numpy_ops import (
     remove_degenerates,
@@ -28,8 +29,11 @@ from meshfix._numpy_ops import (
 )
 from meshfix._pipeline import run_pipeline
 from meshfix._plan import plan_steps
+from meshfix._remesh import adaptive_remesh
 from meshfix.types import (
     Backend,
+    DecimateConfig,
+    DecimateResult,
     FixConfig,
     FixResult,
     FixStep,
@@ -74,7 +78,9 @@ def plan(
 
 
 __all__ = [
+    "adaptive_remesh",
     "available_backends",
+    "decimate",
     "fix",
     "fix_normals",
     "fix_winding",
@@ -83,6 +89,8 @@ __all__ = [
     "remove_floating_vertices",
     "remove_small_shells",
     "Backend",
+    "DecimateConfig",
+    "DecimateResult",
     "FixConfig",
     "FixResult",
     "FixStep",

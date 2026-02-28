@@ -9,4 +9,5 @@ meshes/
 meshes_gen/
 output/
 generation/
+blender_compare/
 .DS_Store

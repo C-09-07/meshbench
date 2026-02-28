@@ -176,6 +176,29 @@ class Defects(_ReportMixin):
 
 
 @dataclass
+class FeatureReport(_ReportMixin):
+    """Feature edge analysis from dihedral angles."""
+
+    feature_edge_count: int
+    smooth_edge_count: int
+    boundary_edge_count: int
+    feature_angle_deg: float  # threshold used
+    feature_edge_ratio: float  # feature / total_interior
+    dihedral_angles: np.ndarray | None = None  # (E_interior,) degrees, opt-in
+
+
+@dataclass
+class CurvatureReport(_ReportMixin):
+    """Discrete curvature statistics."""
+
+    mean_curvature_abs_avg: float
+    mean_curvature_abs_max: float
+    gaussian_curvature_avg: float
+    gaussian_curvature_std: float
+    flat_vertex_ratio: float  # |H| < epsilon
+
+
+@dataclass
 class MeshReport(_ReportMixin):
     """Complete mesh quality report."""
 
