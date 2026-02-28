@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "meshfix"
+version = "0.1.0"
+description = "Targeted mesh repair driven by meshbench analysis"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "meshbench",
+    "trimesh>=4.0",
+    "numpy>=1.26",
+    "scipy>=1.11",
+]
+
+[project.optional-dependencies]
+pymeshlab = ["pymeshlab>=2023.12"]
+manifold = ["manifold3d>=2.4"]
+remesh = ["pynanoinstantmeshes>=0.0.3"]
+all = [
+    "pymeshlab>=2023.12",
+    "manifold3d>=2.4",
+    "pynanoinstantmeshes>=0.0.3",
+]
+
+[tool.uv.sources]
+meshbench = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/meshfix"]
