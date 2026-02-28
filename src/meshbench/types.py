@@ -60,6 +60,8 @@ class ManifoldReport(_ReportMixin):
     non_manifold_edge_ratio: float = 0.0
     non_manifold_vertex_ratio: float = 0.0
     boundary_edge_ratio: float = 0.0
+    self_intersection_count: int = 0
+    self_intersection_ratio: float = 0.0
 
 
 @dataclass
@@ -113,6 +115,39 @@ class CellReport(_ReportMixin):
     min_angle_std: float
     min_angle_min: float
     min_angle_p05: float
+    max_angle_mean: float = 0.0  # degrees
+    max_angle_std: float = 0.0
+    max_angle_max: float = 0.0
+    max_angle_p95: float = 0.0
+    skewness_mean: float = 0.0  # equiangle skewness [0,1]
+    skewness_std: float = 0.0
+    skewness_max: float = 0.0
+    skewness_p95: float = 0.0
+
+
+@dataclass
+class Check(_ReportMixin):
+    """Single metric check result within a ScoreCard."""
+
+    metric: str  # e.g. "is_watertight"
+    status: str  # "pass", "warn", "fail"
+    value: float | int | bool  # actual value
+    threshold_warn: float | None
+    threshold_fail: float | None
+    message: str  # e.g. "12 non-manifold vertices (ratio 0.003)"
+
+
+@dataclass
+class ScoreCard(_ReportMixin):
+    """Application-specific quality score from a profile evaluation."""
+
+    profile: str  # e.g. "print"
+    grade: str  # A-F
+    score: float  # 0-100
+    pass_count: int
+    warn_count: int
+    fail_count: int
+    checks: list[Check] = field(default_factory=list)
 
 
 @dataclass

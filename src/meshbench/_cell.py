@@ -125,7 +125,15 @@ def compute_cell_report(mesh: trimesh.Trimesh) -> CellReport:
     a1[d1 == 0] = 0.0
     a2[d2 == 0] = 0.0
 
-    angles = np.minimum(np.minimum(a0, a1), a2)
+    min_angles = np.minimum(np.minimum(a0, a1), a2)
+    max_angles = np.maximum(np.maximum(a0, a1), a2)
+
+    # Equiangle skewness: max((θmax-60)/120, (60-θmin)/60), range [0,1]
+    skew = np.maximum(
+        (max_angles - 60.0) / 120.0,
+        (60.0 - min_angles) / 60.0,
+    )
+    skew = np.clip(skew, 0.0, 1.0)
 
     # --- Stats ---
     ar_finite = ar[np.isfinite(ar)]
@@ -137,8 +145,16 @@ def compute_cell_report(mesh: trimesh.Trimesh) -> CellReport:
         aspect_ratio_std=float(np.std(ar_finite)),
         aspect_ratio_max=float(np.max(ar)),
         aspect_ratio_p95=float(np.percentile(ar_finite, 95)),
-        min_angle_mean=float(np.mean(angles)),
-        min_angle_std=float(np.std(angles)),
-        min_angle_min=float(np.min(angles)),
-        min_angle_p05=float(np.percentile(angles, 5)),
+        min_angle_mean=float(np.mean(min_angles)),
+        min_angle_std=float(np.std(min_angles)),
+        min_angle_min=float(np.min(min_angles)),
+        min_angle_p05=float(np.percentile(min_angles, 5)),
+        max_angle_mean=float(np.mean(max_angles)),
+        max_angle_std=float(np.std(max_angles)),
+        max_angle_max=float(np.max(max_angles)),
+        max_angle_p95=float(np.percentile(max_angles, 95)),
+        skewness_mean=float(np.mean(skew)),
+        skewness_std=float(np.std(skew)),
+        skewness_max=float(np.max(skew)),
+        skewness_p95=float(np.percentile(skew, 95)),
     )

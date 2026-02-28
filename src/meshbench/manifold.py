@@ -13,6 +13,7 @@ from meshbench._edges import (
     _build_sorted_edges,
     edge_face_counts as _vec_edge_face_counts,
 )
+from meshbench._intersections import detect_self_intersections
 from meshbench.types import ManifoldReport
 
 try:
@@ -297,10 +298,13 @@ def compute_manifold_report(
     total_edges = len(edge_data[0])
     total_verts = mesh.vertices.shape[0]
 
+    n_faces = mesh.faces.shape[0]
+
     b_edges = boundary_edges(mesh, edge_data)
     b_loops = boundary_loops(mesh, edge_data)
     nm_edges = non_manifold_edges(mesh, edge_data)
     nm_verts = non_manifold_vertices(mesh, _edge_face_map=_edge_face_map)
+    si_count, _si_pairs = detect_self_intersections(mesh)
 
     return ManifoldReport(
         is_watertight=len(b_edges) == 0,
@@ -311,4 +315,6 @@ def compute_manifold_report(
         non_manifold_edge_ratio=len(nm_edges) / total_edges if total_edges > 0 else 0.0,
         non_manifold_vertex_ratio=len(nm_verts) / total_verts if total_verts > 0 else 0.0,
         boundary_edge_ratio=len(b_edges) / total_edges if total_edges > 0 else 0.0,
+        self_intersection_count=si_count,
+        self_intersection_ratio=si_count / n_faces if n_faces > 0 else 0.0,
     )

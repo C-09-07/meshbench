@@ -18,14 +18,17 @@ from meshbench.fingerprint import compute_fingerprint, compute_pca
 from meshbench.loading import load
 from meshbench.manifold import compute_manifold_report
 from meshbench.normals import compute_normal_report
+from meshbench.scoring import compute_score
 from meshbench.topology import compute_topology_report
 from meshbench.types import (
     CellReport,
+    Check,
     DensityReport,
     Fingerprint,
     ManifoldReport,
     MeshReport,
     NormalReport,
+    ScoreCard,
     TopologyReport,
 )
 
@@ -77,16 +80,32 @@ def manifold(mesh: trimesh.Trimesh) -> ManifoldReport:
     return compute_manifold_report(mesh)
 
 
+def score(report: MeshReport, profile: str = "print") -> ScoreCard:
+    """Score a MeshReport against an application profile.
+
+    Args:
+        report: Full mesh analysis report from audit().
+        profile: One of "print", "animation", "simulation", "ai_output".
+
+    Returns:
+        ScoreCard with grade, score, and individual check results.
+    """
+    return compute_score(report, profile)
+
+
 __all__ = [
     "audit",
     "fingerprint",
     "load",
     "manifold",
+    "score",
     "CellReport",
+    "Check",
     "DensityReport",
     "Fingerprint",
     "ManifoldReport",
     "MeshReport",
     "NormalReport",
+    "ScoreCard",
     "TopologyReport",
 ]

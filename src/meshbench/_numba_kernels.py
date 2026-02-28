@@ -120,3 +120,106 @@ def _check_vertices_numba(
             count += 1
 
     return result[:count]
+
+
+@numba.njit(cache=True)
+def _sat_batch_numba(triangles, pair_a, pair_b):
+    """Batch SAT triangle-triangle intersection test.
+
+    Parameters
+    ----------
+    triangles : float64 array of shape (F, 3, 3)
+        Vertex positions for every face.
+    pair_a, pair_b : int64 arrays of shape (N,)
+        Face-index arrays for the pairs to test.
+
+    Returns
+    -------
+    bool array of length N — True where the pair intersects.
+    """
+    n = len(pair_a)
+    result = np.empty(n, dtype=numba.boolean)
+
+    for k in range(n):
+        tri_a = triangles[pair_a[k]]
+        tri_b = triangles[pair_b[k]]
+
+        # Edges of each triangle
+        ea0 = tri_a[1] - tri_a[0]
+        ea1 = tri_a[2] - tri_a[1]
+        ea2 = tri_a[0] - tri_a[2]
+        eb0 = tri_b[1] - tri_b[0]
+        eb1 = tri_b[2] - tri_b[1]
+        eb2 = tri_b[0] - tri_b[2]
+
+        # Face normals
+        na = np.empty(3, dtype=np.float64)
+        na[0] = ea0[1] * ea1[2] - ea0[2] * ea1[1]
+        na[1] = ea0[2] * ea1[0] - ea0[0] * ea1[2]
+        na[2] = ea0[0] * ea1[1] - ea0[1] * ea1[0]
+
+        nb = np.empty(3, dtype=np.float64)
+        nb[0] = eb0[1] * eb1[2] - eb0[2] * eb1[1]
+        nb[1] = eb0[2] * eb1[0] - eb0[0] * eb1[2]
+        nb[2] = eb0[0] * eb1[1] - eb0[1] * eb1[0]
+
+        # Build 11 candidate axes: 2 normals + 9 edge cross products
+        # Store in a flat (11, 3) array
+        axes = np.empty((11, 3), dtype=np.float64)
+        axes[0] = na
+        axes[1] = nb
+
+        # 9 edge cross products: ea_i x eb_j
+        edge_a = np.empty((3, 3), dtype=np.float64)
+        edge_a[0] = ea0
+        edge_a[1] = ea1
+        edge_a[2] = ea2
+        edge_b = np.empty((3, 3), dtype=np.float64)
+        edge_b[0] = eb0
+        edge_b[1] = eb1
+        edge_b[2] = eb2
+
+        idx = 2
+        for i in range(3):
+            for j in range(3):
+                ax = np.empty(3, dtype=np.float64)
+                ax[0] = edge_a[i][1] * edge_b[j][2] - edge_a[i][2] * edge_b[j][1]
+                ax[1] = edge_a[i][2] * edge_b[j][0] - edge_a[i][0] * edge_b[j][2]
+                ax[2] = edge_a[i][0] * edge_b[j][1] - edge_a[i][1] * edge_b[j][0]
+                axes[idx] = ax
+                idx += 1
+
+        separated = False
+        for ai in range(11):
+            ax = axes[ai]
+            length_sq = ax[0] * ax[0] + ax[1] * ax[1] + ax[2] * ax[2]
+            if length_sq < 1e-30:
+                continue
+
+            # Project triangle A
+            min_a = 1e30
+            max_a = -1e30
+            for vi in range(3):
+                d = tri_a[vi][0] * ax[0] + tri_a[vi][1] * ax[1] + tri_a[vi][2] * ax[2]
+                if d < min_a:
+                    min_a = d
+                if d > max_a:
+                    max_a = d
+
+            # Project triangle B
+            min_b = 1e30
+            max_b = -1e30
+            for vi in range(3):
+                d = tri_b[vi][0] * ax[0] + tri_b[vi][1] * ax[1] + tri_b[vi][2] * ax[2]
+                if d < min_b:
+                    min_b = d
+                if d > max_b:
+                    max_b = d
+
+            if max_a < min_b or max_b < min_a:
+                separated = True
+                break
+
+        result[k] = not separated
+
+    return result
