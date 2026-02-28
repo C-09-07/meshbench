@@ -76,38 +76,36 @@ def per_face_min_angle(mesh: trimesh.Trimesh) -> np.ndarray:
     return np.minimum(np.minimum(a0, a1), a2)
 
 
-def compute_cell_report(mesh: trimesh.Trimesh) -> CellReport:
-    """Compute per-face quality metrics.
+# Type alias for pre-computed cell arrays: (aspect_ratio, min_angle, max_angle, skewness)
+CellArrays = tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
 
-    Computes edge vectors and norms once, sharing across aspect ratio
-    and min angle calculations to avoid redundant work.
+
+def compute_cell_arrays(mesh: trimesh.Trimesh) -> CellArrays:
+    """Return (aspect_ratio, min_angle, max_angle, skewness) per-face arrays.
+
+    Computes edge vectors and norms once, sharing across all metrics.
     """
-    # Compute edge vectors once (was called 2x before)
     e0, e1, e2 = _edge_vectors(mesh)
     l0sq, l1sq, l2sq = _edge_lengths_squared(e0, e1, e2)
 
-    # --- Aspect ratio (reuses edge data) ---
+    # --- Aspect ratio ---
     longest_sq = np.maximum(np.maximum(l0sq, l1sq), l2sq)
     areas = mesh.area_faces
     with np.errstate(divide="ignore", invalid="ignore"):
         ar = longest_sq / (2.0 * areas)
     ar[areas == 0] = np.inf
 
-    # --- Min angle (reuses edge norms from squared lengths) ---
-    # Pre-compute all 3 edge norms once (was computed 6x across 3 _angle calls)
+    # --- Angles (reuses edge norms from squared lengths) ---
     n0 = np.sqrt(l0sq)
     n1 = np.sqrt(l1sq)
     n2 = np.sqrt(l2sq)
 
-    # angle at v0: between e0 and -e2
     d0 = n0 * n2
     with np.errstate(divide="ignore", invalid="ignore"):
         cos0 = np.sum(e0 * (-e2), axis=1) / d0
-    # angle at v1: between -e0 and e1
     d1 = n0 * n1
     with np.errstate(divide="ignore", invalid="ignore"):
         cos1 = np.sum((-e0) * e1, axis=1) / d1
-    # angle at v2: between e2 and -e1
     d2 = n2 * n1
     with np.errstate(divide="ignore", invalid="ignore"):
         cos2 = np.sum(e2 * (-e1), axis=1) / d2
@@ -120,7 +118,6 @@ def compute_cell_report(mesh: trimesh.Trimesh) -> CellReport:
     a1 = np.degrees(np.arccos(cos1))
     a2 = np.degrees(np.arccos(cos2))
 
-    # Zero-length edges → 0 angle
     a0[d0 == 0] = 0.0
     a1[d1 == 0] = 0.0
     a2[d2 == 0] = 0.0
@@ -135,7 +132,22 @@ def compute_cell_report(mesh: trimesh.Trimesh) -> CellReport:
     )
     skew = np.clip(skew, 0.0, 1.0)
 
-    # --- Stats ---
+    return ar, min_angles, max_angles, skew
+
+
+def compute_cell_report(
+    mesh: trimesh.Trimesh,
+    _cell_arrays: CellArrays | None = None,
+) -> CellReport:
+    """Compute per-face quality statistics.
+
+    Accepts pre-computed cell arrays to avoid double work when
+    defects also need the raw per-face values.
+    """
+    if _cell_arrays is None:
+        _cell_arrays = compute_cell_arrays(mesh)
+    ar, min_angles, max_angles, skew = _cell_arrays
+
     ar_finite = ar[np.isfinite(ar)]
     if len(ar_finite) == 0:
         ar_finite = np.array([np.inf])

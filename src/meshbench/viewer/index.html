@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>meshbench viewer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #1a1a2e; color: #e0e0e0; }
+  #viewport { width: 100%; height: 65vh; display: block; cursor: grab; }
+  #viewport:active { cursor: grabbing; }
+  #controls { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: #16213e; border-top: 1px solid #0f3460; flex-wrap: wrap; }
+  #controls label { font-size: 13px; color: #a0a0c0; }
+  #controls select, #controls input[type=range] { accent-color: #e94560; }
+  #controls select { background: #0f3460; color: #e0e0e0; border: 1px solid #333; padding: 4px 8px; border-radius: 4px; }
+  #threshold-val { font-size: 13px; min-width: 40px; color: #e94560; font-weight: bold; }
+  #controls .sep { border-left: 1px solid #333; height: 24px; }
+  #controls .cb-group { display: flex; align-items: center; gap: 4px; font-size: 13px; }
+  #controls .cb-group input { accent-color: #e94560; }
+  #panel { padding: 16px; background: #16213e; border-top: 1px solid #0f3460; }
+  #panel h2 { font-size: 16px; margin-bottom: 8px; }
+  .grade { display: inline-block; padding: 2px 10px; border-radius: 4px; font-weight: bold; margin-left: 8px; }
+  .grade-A { background: #27ae60; color: #fff; }
+  .grade-B { background: #2ecc71; color: #fff; }
+  .grade-C { background: #f39c12; color: #fff; }
+  .grade-D { background: #e67e22; color: #fff; }
+  .grade-F { background: #e74c3c; color: #fff; }
+  #checks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .check { font-size: 13px; padding: 3px 10px; border-radius: 12px; }
+  .check-pass { background: #1e3a2f; color: #6ddb8f; }
+  .check-warn { background: #3a3520; color: #f0c040; }
+  .check-fail { background: #3a1e1e; color: #f06060; }
+  #hover-info { position: fixed; top: 10px; right: 10px; background: rgba(22,33,62,0.92); padding: 8px 12px; border-radius: 6px; font-size: 12px; pointer-events: none; display: none; border: 1px solid #0f3460; }
+  #loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #1a1a2e; z-index: 100; font-size: 18px; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="loading">Loading mesh...</div>
+<canvas id="viewport"></canvas>
+<div id="controls">
+  <label>Metric</label>
+  <select id="metric-select">
+    <option value="none">None</option>
+    <option value="aspect_ratio" selected>Aspect Ratio</option>
+    <option value="min_angle">Min Angle</option>
+    <option value="max_angle">Max Angle</option>
+    <option value="skewness">Skewness</option>
+  </select>
+  <label>Threshold</label>
+  <input type="range" id="threshold" min="0" max="1" step="0.01" value="0.5" style="width:160px">
+  <span id="threshold-val">0.50</span>
+  <div class="sep"></div>
+  <div class="cb-group"><input type="checkbox" id="cb-degen" checked><label for="cb-degen">Degenerates</label></div>
+  <div class="cb-group"><input type="checkbox" id="cb-nm-vert" checked><label for="cb-nm-vert">NM Verts</label></div>
+  <div class="cb-group"><input type="checkbox" id="cb-nm-edge" checked><label for="cb-nm-edge">NM Edges</label></div>
+  <div class="cb-group"><input type="checkbox" id="cb-boundary" checked><label for="cb-boundary">Boundary</label></div>
+  <div class="cb-group"><input type="checkbox" id="cb-si" checked><label for="cb-si">Self-Isect</label></div>
+</div>
+<div id="panel"></div>
+<div id="hover-info"></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+// --- State ---
+let defectsData = null;
+let meshGeo = null;         // non-indexed BufferGeometry
+let colorAttr = null;       // per-vertex color attribute
+let baseColors = null;      // Float32Array of base gray
+const overlays = {};        // name -> THREE.Object3D
+
+// --- Scene setup ---
+const canvas = document.getElementById('viewport');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setClearColor(0x1a1a2e);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, 2, 0.01, 1000);
+camera.position.set(0, 1.5, 3);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+
+// Lighting
+scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+dirLight.position.set(5, 10, 7);
+scene.add(dirLight);
+const dirLight2 = new THREE.DirectionalLight(0xffffff, 0.3);
+dirLight2.position.set(-5, -3, -5);
+scene.add(dirLight2);
+
+// --- Resize ---
+function resize() {
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== w || canvas.height !== h) {
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+}
+
+// --- Load data ---
+async function init() {
+  const [gltf, jsonResp] = await Promise.all([
+    new Promise((resolve, reject) => {
+      new GLTFLoader().load('mesh.glb', resolve, undefined, reject);
+    }),
+    fetch('defects.json').then(r => r.json()),
+  ]);
+  defectsData = jsonResp;
+
+  // Extract first mesh geometry from GLTF
+  let srcGeo = null;
+  gltf.scene.traverse(child => {
+    if (!srcGeo && child.isMesh) srcGeo = child.geometry;
+  });
+  if (!srcGeo) { document.getElementById('loading').textContent = 'No mesh found'; return; }
+
+  // Convert to non-indexed for per-face colors
+  meshGeo = srcGeo.index ? srcGeo.toNonIndexed() : srcGeo.clone();
+  meshGeo.computeVertexNormals();
+
+  const nVerts = meshGeo.attributes.position.count;
+  baseColors = new Float32Array(nVerts * 3);
+  baseColors.fill(0.6); // neutral gray
+  meshGeo.setAttribute('color', new THREE.BufferAttribute(baseColors.slice(), 3));
+  colorAttr = meshGeo.attributes.color;
+
+  const mat = new THREE.MeshPhongMaterial({
+    vertexColors: true, flatShading: true, side: THREE.DoubleSide,
+  });
+  const meshObj = new THREE.Mesh(meshGeo, mat);
+  scene.add(meshObj);
+
+  // Wireframe overlay
+  const wire = new THREE.LineSegments(
+    new THREE.WireframeGeometry(meshGeo),
+    new THREE.LineBasicMaterial({ color: 0x333355, transparent: true, opacity: 0.15 }),
+  );
+  scene.add(wire);
+
+  // Center camera on mesh
+  meshGeo.computeBoundingSphere();
+  const { center, radius } = meshGeo.boundingSphere;
+  controls.target.copy(center);
+  camera.position.copy(center).add(new THREE.Vector3(0, radius * 0.8, radius * 2.5));
+  controls.update();
+
+  // Build defect overlays from the positions in the loaded geometry
+  buildDefectOverlays(meshGeo, gltf);
+
+  // Render score panel
+  renderPanel();
+
+  // Apply initial metric
+  applyMetricOverlay();
+
+  document.getElementById('loading').style.display = 'none';
+  animate();
+}
+
+// --- Defect overlays ---
+function buildDefectOverlays(geo, gltf) {
+  const pos = geo.attributes.position;
+  const faceCount = defectsData.face_count;
+
+  // Helper: get original mesh positions (indexed) for edge overlays
+  let origPos = null;
+  let origFaces = null;
+  gltf.scene.traverse(child => {
+    if (!origPos && child.isMesh) {
+      origPos = child.geometry.attributes.position;
+      origFaces = child.geometry.index;
+    }
+  });
+
+  // Degenerate faces — highlight in bright magenta
+  if (defectsData.defects.degenerate_faces) {
+    const indices = defectsData.defects.degenerate_faces;
+    const pts = [];
+    for (const fi of indices) {
+      // In non-indexed geo, face i = vertices [3i, 3i+1, 3i+2]
+      for (let v = 0; v < 3; v++) {
+        const idx = fi * 3 + v;
+        if (idx < pos.count) pts.push(pos.getX(idx), pos.getY(idx), pos.getZ(idx));
+      }
+    }
+    if (pts.length > 0) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+      const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
+        color: 0xff00ff, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthTest: false,
+      }));
+      scene.add(m);
+      overlays['degen'] = m;
+    }
+  }
+
+  // Non-manifold vertices — red spheres
+  if (defectsData.defects.non_manifold_vertices && origPos) {
+    const indices = defectsData.defects.non_manifold_vertices;
+    const sphereGeo = new THREE.SphereGeometry(0.005, 6, 6);
+    const sphereMat = new THREE.MeshBasicMaterial({ color: 0xff3333, depthTest: false });
+    const group = new THREE.Group();
+    for (const vi of indices) {
+      if (vi < origPos.count) {
+        const s = new THREE.Mesh(sphereGeo, sphereMat);
+        s.position.set(origPos.getX(vi), origPos.getY(vi), origPos.getZ(vi));
+        group.add(s);
+      }
+    }
+    scene.add(group);
+    overlays['nm-vert'] = group;
+  }
+
+  // Edge overlays (boundary, non-manifold edges)
+  function addEdgeOverlay(name, edgeList, color) {
+    if (!edgeList || !origPos) return;
+    const pts = [];
+    for (const [v0, v1] of edgeList) {
+      if (v0 < origPos.count && v1 < origPos.count) {
+        pts.push(origPos.getX(v0), origPos.getY(v0), origPos.getZ(v0));
+        pts.push(origPos.getX(v1), origPos.getY(v1), origPos.getZ(v1));
+      }
+    }
+    if (pts.length > 0) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+      const line = new THREE.LineSegments(g, new THREE.LineBasicMaterial({
+        color, linewidth: 2, depthTest: false,
+      }));
+      scene.add(line);
+      overlays[name] = line;
+    }
+  }
+
+  addEdgeOverlay('nm-edge', defectsData.defects.non_manifold_edges, 0xff6600);
+  addEdgeOverlay('boundary', defectsData.defects.boundary_edges, 0x00ccff);
+
+  // Self-intersection face pairs — highlight both faces in yellow
+  if (defectsData.defects.self_intersection_pairs) {
+    const pairs = defectsData.defects.self_intersection_pairs;
+    const pts = [];
+    const seen = new Set();
+    for (const [fi, fj] of pairs) {
+      for (const f of [fi, fj]) {
+        if (seen.has(f)) continue;
+        seen.add(f);
+        for (let v = 0; v < 3; v++) {
+          const idx = f * 3 + v;
+          if (idx < pos.count) pts.push(pos.getX(idx), pos.getY(idx), pos.getZ(idx));
+        }
+      }
+    }
+    if (pts.length > 0) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+      const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
+        color: 0xffff00, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthTest: false,
+      }));
+      scene.add(m);
+      overlays['si'] = m;
+    }
+  }
+}
+
+// --- Metric overlay coloring ---
+function applyMetricOverlay() {
+  if (!colorAttr || !defectsData) return;
+  const metric = document.getElementById('metric-select').value;
+  const rawThreshold = parseFloat(document.getElementById('threshold').value);
+
+  // Reset to base gray
+  colorAttr.array.set(baseColors);
+
+  if (metric !== 'none' && defectsData.metrics[metric]) {
+    const values = defectsData.metrics[metric].values;
+    const stats = defectsData.metrics[metric].stats;
+
+    // Map threshold slider [0,1] to metric-appropriate range
+    let absThreshold;
+    if (metric === 'aspect_ratio') {
+      // 1.15 (equilateral) to 20
+      absThreshold = 1.15 + rawThreshold * 18.85;
+    } else if (metric === 'min_angle') {
+      // 60 (perfect) to 0 — lower is worse, invert
+      absThreshold = 60 - rawThreshold * 60;
+    } else if (metric === 'max_angle') {
+      // 60 (perfect) to 180 — higher is worse
+      absThreshold = 60 + rawThreshold * 120;
+    } else if (metric === 'skewness') {
+      // 0 (perfect) to 1
+      absThreshold = rawThreshold;
+    }
+
+    document.getElementById('threshold-val').textContent =
+      absThreshold !== undefined ? absThreshold.toFixed(1) : rawThreshold.toFixed(2);
+
+    for (let fi = 0; fi < values.length; fi++) {
+      if (values[fi] === null || values[fi] === undefined) continue;
+      let bad = false;
+      if (metric === 'min_angle') {
+        bad = values[fi] < absThreshold; // below threshold is bad
+      } else {
+        bad = values[fi] > absThreshold; // above threshold is bad
+      }
+      if (bad) {
+        // Severity interpolation: orange → red
+        let severity;
+        if (metric === 'min_angle') {
+          severity = absThreshold > 0 ? Math.min(1, (absThreshold - values[fi]) / absThreshold) : 1;
+        } else if (metric === 'aspect_ratio') {
+          severity = Math.min(1, (values[fi] - absThreshold) / 10);
+        } else if (metric === 'max_angle') {
+          severity = Math.min(1, (values[fi] - absThreshold) / 60);
+        } else {
+          severity = Math.min(1, (values[fi] - absThreshold) / 0.5);
+        }
+        const r = 1.0;
+        const g = 0.4 * (1 - severity);
+        const b = 0.0;
+        for (let v = 0; v < 3; v++) {
+          const idx = (fi * 3 + v) * 3;
+          colorAttr.array[idx] = r;
+          colorAttr.array[idx + 1] = g;
+          colorAttr.array[idx + 2] = b;
+        }
+      }
+    }
+  } else {
+    document.getElementById('threshold-val').textContent = rawThreshold.toFixed(2);
+  }
+
+  colorAttr.needsUpdate = true;
+}
+
+// --- Checkbox toggles ---
+function setupCheckboxes() {
+  const map = {
+    'cb-degen': 'degen',
+    'cb-nm-vert': 'nm-vert',
+    'cb-nm-edge': 'nm-edge',
+    'cb-boundary': 'boundary',
+    'cb-si': 'si',
+  };
+  for (const [cbId, overlayKey] of Object.entries(map)) {
+    document.getElementById(cbId).addEventListener('change', e => {
+      if (overlays[overlayKey]) overlays[overlayKey].visible = e.target.checked;
+    });
+  }
+}
+
+// --- Score panel ---
+function renderPanel() {
+  const panel = document.getElementById('panel');
+  if (!defectsData.score) {
+    panel.innerHTML = '<p style="color:#666">No score data</p>';
+    return;
+  }
+  const s = defectsData.score;
+  const gradeClass = 'grade-' + s.grade;
+  let html = `<h2>meshbench audit <span class="grade ${gradeClass}">${s.grade}</span> ${s.score} &mdash; ${s.profile}</h2>`;
+  html += '<div id="checks">';
+  for (const c of s.checks) {
+    const icon = c.status === 'pass' ? '\u2713' : c.status === 'warn' ? '\u26A0' : '\u2717';
+    html += `<span class="check check-${c.status}">${icon} ${c.message}</span>`;
+  }
+  html += '</div>';
+  panel.innerHTML = html;
+}
+
+// --- Hover info ---
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+function onMouseMove(event) {
+  const rect = canvas.getBoundingClientRect();
+  mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+  raycaster.setFromCamera(mouse, camera);
+  const meshObj = scene.children.find(c => c.isMesh && c.geometry === meshGeo);
+  if (!meshObj) return;
+
+  const hits = raycaster.intersectObject(meshObj);
+  const info = document.getElementById('hover-info');
+  if (hits.length > 0) {
+    const fi = Math.floor(hits[0].faceIndex);
+    const metric = document.getElementById('metric-select').value;
+    let text = `Face ${fi}`;
+    if (metric !== 'none' && defectsData.metrics[metric]) {
+      const v = defectsData.metrics[metric].values[fi];
+      text += ` | ${metric}: ${v !== undefined ? v.toFixed(3) : 'N/A'}`;
+    }
+    info.textContent = text;
+    info.style.display = 'block';
+  } else {
+    info.style.display = 'none';
+  }
+}
+canvas.addEventListener('mousemove', onMouseMove);
+
+// --- Events ---
+document.getElementById('metric-select').addEventListener('change', applyMetricOverlay);
+document.getElementById('threshold').addEventListener('input', applyMetricOverlay);
+setupCheckboxes();
+
+// --- Animate ---
+function animate() {
+  requestAnimationFrame(animate);
+  resize();
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+init().catch(err => {
+  console.error(err);
+  document.getElementById('loading').textContent = 'Error: ' + err.message;
+});
+</script>
+</body>
+</html>

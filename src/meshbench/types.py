@@ -151,6 +151,27 @@ class ScoreCard(_ReportMixin):
 
 
 @dataclass
+class Defects(_ReportMixin):
+    """Per-element defect indices and per-face metric arrays."""
+
+    # Manifold defects (index arrays)
+    boundary_edges: np.ndarray | None = None  # (N, 2) vertex pairs
+    non_manifold_edges: np.ndarray | None = None  # (N, 2) vertex pairs
+    non_manifold_vertices: np.ndarray | None = None  # (M,) vertex indices
+    self_intersection_pairs: np.ndarray | None = None  # (K, 2) face pairs
+
+    # Topology defects (index arrays)
+    degenerate_faces: np.ndarray | None = None  # (D,) face indices
+    floating_vertices: np.ndarray | None = None  # (V,) vertex indices
+
+    # Per-face metric arrays
+    aspect_ratio: np.ndarray | None = None  # (F,)
+    min_angle: np.ndarray | None = None  # (F,) degrees
+    max_angle: np.ndarray | None = None  # (F,) degrees
+    skewness: np.ndarray | None = None  # (F,) [0,1]
+
+
+@dataclass
 class MeshReport(_ReportMixin):
     """Complete mesh quality report."""
 
@@ -163,3 +184,4 @@ class MeshReport(_ReportMixin):
     topology: TopologyReport
     density: DensityReport
     cell: CellReport | None = None
+    defects: Defects | None = None
