@@ -160,9 +160,13 @@ class Defects(_ReportMixin):
     non_manifold_vertices: np.ndarray | None = None  # (M,) vertex indices
     self_intersection_pairs: np.ndarray | None = None  # (K, 2) face pairs
 
+    # Normal defects
+    flipped_face_pairs: np.ndarray | None = None  # (N, 2) adjacent face pairs with opposing normals
+
     # Topology defects (index arrays)
     degenerate_faces: np.ndarray | None = None  # (D,) face indices
     floating_vertices: np.ndarray | None = None  # (V,) vertex indices
+    high_valence_vertices: np.ndarray | None = None  # (H,) vertex indices with valence >= 10
 
     # Per-face metric arrays
     aspect_ratio: np.ndarray | None = None  # (F,)

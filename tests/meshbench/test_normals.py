@@ -11,6 +11,7 @@ from meshbench.normals import (
     check_and_fix_inverted_normals,
     compute_normal_report,
     dominant_normal,
+    flipped_face_pairs,
     flipped_normal_count,
     normal_entropy,
     winding_consistency,
@@ -51,6 +52,10 @@ class TestFlippedNormals:
         # A proper cube has consistent winding
         assert count == 0
 
+    def test_consistent_cube_no_pairs(self, unit_cube: trimesh.Trimesh) -> None:
+        pairs = flipped_face_pairs(unit_cube)
+        assert pairs.shape == (0, 2)
+
     def test_winding_consistency_cube(self, unit_cube: trimesh.Trimesh) -> None:
         assert winding_consistency(unit_cube) == 1.0
 
@@ -63,11 +68,24 @@ class TestFlippedNormals:
         assert count > 0
         assert winding_consistency(mesh) < 1.0
 
+    def test_inverted_face_pairs_returned(self) -> None:
+        """flipped_face_pairs returns the actual pairs."""
+        mesh = trimesh.creation.box(extents=[1, 1, 1])
+        mesh.faces[0] = mesh.faces[0][::-1]
+        pairs = flipped_face_pairs(mesh)
+        assert pairs.shape[0] > 0
+        assert pairs.shape[1] == 2
+        # Face 0 should be in at least one pair
+        assert 0 in pairs
+        # Count should match
+        assert flipped_normal_count(mesh) == pairs.shape[0]
+
     def test_single_face_mesh(self) -> None:
         verts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float)
         faces = np.array([[0, 1, 2]])
         mesh = trimesh.Trimesh(vertices=verts, faces=faces)
         assert flipped_normal_count(mesh) == 0
+        assert flipped_face_pairs(mesh).shape == (0, 2)
         assert winding_consistency(mesh) == 1.0
 
 

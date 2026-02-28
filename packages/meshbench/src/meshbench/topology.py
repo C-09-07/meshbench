@@ -79,6 +79,20 @@ def valence_stats(
     return mean, std, quad_ratio, outlier_count
 
 
+def high_valence_vertices(
+    mesh: trimesh.Trimesh,
+    threshold: int = 10,
+    _edge_data: EdgeData | None = None,
+) -> np.ndarray:
+    """Return vertex indices with valence >= threshold.
+
+    High-valence vertices (star vertices) can cause remeshing issues
+    and indicate topological noise from AI mesh generators.
+    """
+    valences = vertex_valences(mesh, _edge_data)
+    return np.where(valences >= threshold)[0]
+
+
 def degenerate_faces(mesh: trimesh.Trimesh, area_threshold: float = 1e-10) -> list[int]:
     """Return indices of zero/near-zero area triangles."""
     areas = mesh.area_faces

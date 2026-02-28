@@ -101,6 +101,50 @@ class TestDefectIndices:
         assert report.defects.floating_vertices is not None
         assert 3 in report.defects.floating_vertices
 
+    def test_cube_no_flipped_pairs(self, unit_cube: trimesh.Trimesh) -> None:
+        """Consistent cube has no flipped face pairs."""
+        report = meshbench.audit(unit_cube, include_defects=True)
+        assert report.defects.flipped_face_pairs is None
+
+    def test_flipped_face_detected(self) -> None:
+        """Inverting one face creates a flipped pair."""
+        mesh = trimesh.creation.box(extents=[1, 1, 1])
+        # Flip winding of face 0
+        mesh.faces[0] = mesh.faces[0][::-1]
+        report = meshbench.audit(mesh, include_defects=True)
+        assert report.defects.flipped_face_pairs is not None
+        assert report.defects.flipped_face_pairs.ndim == 2
+        assert report.defects.flipped_face_pairs.shape[1] == 2
+        # Face 0 should appear in at least one pair
+        assert 0 in report.defects.flipped_face_pairs
+
+    def test_cube_no_high_valence(self, unit_cube: trimesh.Trimesh) -> None:
+        """Cube vertices all have low valence."""
+        report = meshbench.audit(unit_cube, include_defects=True)
+        assert report.defects.high_valence_vertices is None
+
+    def test_high_valence_star_vertex(self) -> None:
+        """A star vertex with many spokes is detected."""
+        # Build a fan: center vertex 0 connected to 12 surrounding vertices
+        n_spokes = 12
+        verts = [[0, 0, 0]]  # center
+        for i in range(n_spokes):
+            angle = 2 * np.pi * i / n_spokes
+            verts.append([np.cos(angle), np.sin(angle), 0])
+        faces = []
+        for i in range(n_spokes):
+            faces.append([0, i + 1, (i % n_spokes) + 1 + (1 if i < n_spokes - 1 else -n_spokes + 1)])
+        # Fix last face to wrap around
+        faces[-1] = [0, n_spokes, 1]
+        mesh = trimesh.Trimesh(
+            vertices=np.array(verts, dtype=float),
+            faces=np.array(faces),
+            process=False,
+        )
+        report = meshbench.audit(mesh, include_defects=True)
+        assert report.defects.high_valence_vertices is not None
+        assert 0 in report.defects.high_valence_vertices
+
 
 class TestDefectsSerialization:
     def test_to_dict_round_trip(self, unit_cube: trimesh.Trimesh) -> None:

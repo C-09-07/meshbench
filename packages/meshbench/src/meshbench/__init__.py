@@ -30,12 +30,13 @@ from meshbench.manifold import (
     non_manifold_edges,
     non_manifold_vertices,
 )
-from meshbench.normals import compute_normal_report
+from meshbench.normals import compute_normal_report, flipped_face_pairs
 from meshbench.scoring import compute_score
 from meshbench.topology import (
     compute_topology_report,
     degenerate_faces,
     floating_vertices,
+    high_valence_vertices,
 )
 from meshbench.types import (
     CellReport,
@@ -66,14 +67,18 @@ def _build_defects(
     _, si_pairs = detect_self_intersections(mesh)
     degen = degenerate_faces(mesh)
     floating = floating_vertices(mesh)
+    flipped = flipped_face_pairs(mesh)
+    hv_verts = high_valence_vertices(mesh, _edge_data=edge_data)
 
     return Defects(
         boundary_edges=b_edges if len(b_edges) > 0 else None,
         non_manifold_edges=nm_edges if len(nm_edges) > 0 else None,
         non_manifold_vertices=np.array(nm_verts, dtype=np.intp) if nm_verts else None,
         self_intersection_pairs=si_pairs if si_pairs.shape[0] > 0 else None,
+        flipped_face_pairs=flipped if len(flipped) > 0 else None,
         degenerate_faces=np.array(degen, dtype=np.intp) if degen else None,
         floating_vertices=np.array(floating, dtype=np.intp) if floating else None,
+        high_valence_vertices=hv_verts if len(hv_verts) > 0 else None,
         aspect_ratio=ar,
         min_angle=min_angles,
         max_angle=max_angles,

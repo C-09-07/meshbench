@@ -79,18 +79,28 @@ def dominant_normal(
     return weighted_normal / norm
 
 
-def flipped_normal_count(mesh: trimesh.Trimesh) -> int:
-    """Count adjacent face pairs with opposing normals (dot < 0)."""
+def flipped_face_pairs(mesh: trimesh.Trimesh) -> np.ndarray:
+    """Return (N, 2) array of adjacent face pairs with opposing normals (dot < 0).
+
+    Each row is a pair of face indices whose normals disagree.
+    Returns empty (0, 2) array if none found.
+    """
     if mesh.faces.shape[0] < 2:
-        return 0
+        return np.empty((0, 2), dtype=np.intp)
 
     adj = mesh.face_adjacency
     if len(adj) == 0:
-        return 0
+        return np.empty((0, 2), dtype=np.intp)
 
     normals = mesh.face_normals
     dots = np.sum(normals[adj[:, 0]] * normals[adj[:, 1]], axis=1)
-    return int(np.sum(dots < 0))
+    mask = dots < 0
+    return adj[mask]
+
+
+def flipped_normal_count(mesh: trimesh.Trimesh) -> int:
+    """Count adjacent face pairs with opposing normals (dot < 0)."""
+    return len(flipped_face_pairs(mesh))
 
 
 def winding_consistency(
@@ -102,7 +112,7 @@ def winding_consistency(
     Returns 1.0 for perfectly consistent winding, 0.0 for all flipped.
 
     Args:
-        _flipped: Optional pre-computed flipped_normal_count to avoid recomputation.
+        _flipped: Optional pre-computed flipped count to avoid recomputation.
     """
     if mesh.faces.shape[0] < 2:
         return 1.0
@@ -112,8 +122,8 @@ def winding_consistency(
     if total_pairs == 0:
         return 1.0
 
-    flipped = _flipped if _flipped is not None else flipped_normal_count(mesh)
-    return 1.0 - (flipped / total_pairs)
+    n_flipped = _flipped if _flipped is not None else flipped_normal_count(mesh)
+    return 1.0 - (n_flipped / total_pairs)
 
 
 def backface_divergence(
