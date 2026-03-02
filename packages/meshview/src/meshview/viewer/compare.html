@@ -127,8 +127,8 @@ function createPanel(name, canvas) {
 createPanel('before', canvasBefore);
 createPanel('after', canvasAfter);
 
-// --- Load mesh + defects for one panel ---
-async function loadPanel(name, baseUrl) {
+// --- Load mesh + defects for one panel (phase 1: load raw geometry) ---
+async function loadPanelRaw(name, baseUrl) {
   const panel = panels[name];
   const [gltf, jsonData] = await Promise.all([
     new Promise((resolve, reject) => {
@@ -137,6 +137,7 @@ async function loadPanel(name, baseUrl) {
     fetch(baseUrl + '/defects.json').then(r => r.json()),
   ]);
   panel.defectsData = jsonData;
+  panel.gltf = gltf;
 
   let srcGeo = null;
   gltf.scene.traverse(child => { if (!srcGeo && child.isMesh) srcGeo = child.geometry; });
@@ -146,16 +147,24 @@ async function loadPanel(name, baseUrl) {
   meshGeo.computeVertexNormals();
   meshGeo.computeBoundingSphere();
   panel.meshGeo = meshGeo;
+  panel.rawCenter = meshGeo.boundingSphere.center.clone();
+  panel.rawRadius = meshGeo.boundingSphere.radius;
+}
 
-  // Normalize to unit bounding sphere at origin
-  const { center, radius } = meshGeo.boundingSphere;
-  panel.normalizeRadius = radius;
-  panel.normalizeCenter = center.clone();
+// --- Normalize and finalize panel (phase 2: shared scale) ---
+function finalizePanel(name, sharedCenter, sharedRadius) {
+  const panel = panels[name];
+  if (!panel.meshGeo) return;
+
+  const meshGeo = panel.meshGeo;
+  panel.normalizeRadius = sharedRadius;
+  panel.normalizeCenter = sharedCenter.clone();
+
   const posArr = meshGeo.attributes.position.array;
   for (let i = 0; i < posArr.length; i += 3) {
-    posArr[i]     = (posArr[i] - center.x) / radius;
-    posArr[i + 1] = (posArr[i + 1] - center.y) / radius;
-    posArr[i + 2] = (posArr[i + 2] - center.z) / radius;
+    posArr[i]     = (posArr[i] - sharedCenter.x) / sharedRadius;
+    posArr[i + 1] = (posArr[i + 1] - sharedCenter.y) / sharedRadius;
+    posArr[i + 2] = (posArr[i + 2] - sharedCenter.z) / sharedRadius;
   }
   meshGeo.attributes.position.needsUpdate = true;
   meshGeo.computeBoundingSphere();
@@ -172,7 +181,7 @@ async function loadPanel(name, baseUrl) {
   panel.scene.add(meshObj);
 
   // Build defect overlays (initially hidden)
-  buildDefectOverlays(panel, meshGeo, gltf);
+  buildDefectOverlays(panel, meshGeo, panel.gltf);
 }
 
 // --- Defect overlays (same approach as index.html) ---
@@ -496,10 +505,18 @@ function animate() {
 
 // --- Init ---
 async function init() {
+  // Phase 1: load both meshes raw (parallel)
   await Promise.all([
-    loadPanel('before', 'before'),
-    loadPanel('after', 'after'),
+    loadPanelRaw('before', 'before'),
+    loadPanelRaw('after', 'after'),
   ]);
+
+  // Phase 2: compute shared normalization from the larger bounding sphere
+  // Use the "before" mesh center (the original) so both are aligned to the same origin
+  const sharedCenter = panels.before.rawCenter.clone();
+  const sharedRadius = Math.max(panels.before.rawRadius, panels.after.rawRadius);
+  finalizePanel('before', sharedCenter, sharedRadius);
+  finalizePanel('after', sharedCenter, sharedRadius);
 
   // Position camera to see the normalized mesh
   camera.position.set(0, 0.8, 2.5);
