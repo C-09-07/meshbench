@@ -5,8 +5,8 @@ Monorepo for geometric mesh analysis, repair, and visualization. Three packages:
 | Package | Version | Purpose |
 |---------|---------|---------|
 | **meshbench** | 1.1.0 | Quality analysis — fingerprints, manifold integrity, normals, topology, cell quality, feature edges, curvature |
-| **meshfix** | 0.1.0 | Targeted repair — degenerate removal, winding fixes, QEM decimation, adaptive remeshing |
-| **meshview** | 0.1.0 | Interactive Three.js viewer — defect visualization, data export |
+| **meshfix** | 0.1.0 | Targeted repair — degenerate removal, non-manifold splitting, hole filling, winding fixes, QEM decimation, adaptive remeshing |
+| **meshview** | 0.1.0 | Interactive Three.js viewer — single-pane defect viewer, 2-up before/after comparison with heatmap, component coloring, wireframe overlay |
 
 Built on [trimesh](https://trimesh.org/), pure NumPy/SciPy. Processes ~1M faces/sec on clean geometry.
 
@@ -154,12 +154,25 @@ Curvature-weighted decimation. Same backend as `decimate()` but exposes `curvatu
 All return new Trimesh, never mutate input:
 
 ```python
+# Phase 1: cleanup
 remove_degenerates(mesh, face_indices=None) -> Trimesh
 remove_floating_vertices(mesh, vert_indices=None) -> Trimesh
 remove_small_shells(mesh, min_face_count=None, min_face_ratio=None) -> Trimesh
+
+# Phase 3: topology repair
+split_non_manifold_edges(mesh, edge_pairs=None) -> Trimesh
+split_non_manifold_vertices(mesh, vert_indices=None) -> Trimesh
+fill_holes(mesh, boundary_edge_pairs=None, max_hole_edges=100) -> Trimesh
+resolve_self_intersections(mesh, intersection_pairs=None) -> Trimesh
+
+# Normalization
 fix_winding(mesh) -> Trimesh
 fix_normals(mesh) -> Trimesh
 ```
+
+Hole filling uses adaptive concentric ring fill for holes >= 8 edges (inserts intermediate vertex rings for uniform aspect ratios), ear-clipping for smaller holes.
+
+`resolve_self_intersections` uses manifold3d (lossless self-union) when available, falls back to face removal (lossy).
 
 ### `available_backends() -> dict[Backend, bool]`
 
@@ -167,11 +180,35 @@ Check which optional backends are installed (pymeshlab, manifold3d, pynanoinstan
 
 ## meshview API
 
-### `export_viewer_data(mesh, report, dir) -> Path`
+### `export_viewer_data(mesh, report, dir, mesh_format="glb", profile="print") -> Path`
 
-Export mesh + defect data for the interactive Three.js viewer.
+Export mesh + defect data for the single-pane Three.js viewer (`index.html`).
 
-### `build_defects_json(report) -> dict`
+### `export_comparison(mesh_before, report_before, mesh_after, report_after, dir, mesh_format="glb", profile="print") -> Path`
+
+Export before/after comparison data for the 2-up viewer (`compare.html`). Includes per-face component labels for component coloring mode.
+
+```python
+import meshbench, meshfix, meshview
+
+mesh = meshbench.load("model.glb")
+report = meshbench.audit(mesh, include_defects=True)
+fixed, result = meshfix.fix(mesh, report=report)
+
+meshview.export_comparison(mesh, report, fixed, result.after, "output/compare")
+# Serve with: python -m http.server 8765 -d output/compare
+# Open: http://localhost:8765/compare.html
+```
+
+The comparison viewer provides:
+- **Synced camera** — orbit either panel, both follow
+- **View modes** — Heatmap (green→red gradient per metric), Components (random color per connected component), Defects (NM edges, boundary, degenerates), Solid (neutral gray)
+- **Wireframe overlay** — toggle edge visibility on any mode
+- **Opacity control** — transparent hull for inspecting internal structure
+- **Score HUD** — grade badge + stats on each panel
+- **Summary bar** — before→after deltas (faces, degenerates, components, watertight)
+
+### `build_defects_json(report, score_card=None, component_labels=None) -> dict`
 
 Build defect overlay data from a MeshReport.
 
@@ -253,7 +290,7 @@ tripo3d             10  60.0%   0.998   0.246    11.6     1.02       2       0  
 uv run pytest tests/ -v
 ```
 
-215 tests across all packages.
+268 tests across all packages.
 
 ## Architecture
 
@@ -278,19 +315,25 @@ packages/
 │   └── topology.py        # Genus, valence, degenerates, components
 │
 ├── meshfix/src/meshfix/
-│   ├── __init__.py        # Public API: fix(), plan(), decimate(), adaptive_remesh()
-│   ├── types.py           # FixConfig, DecimateConfig, Backend enum
-│   ├── _backends.py       # Backend availability checking
-│   ├── _decimate.py       # QEM decimation with quality weighting
-│   ├── _remesh.py         # Curvature-weighted adaptive decimation
-│   ├── _normal_ops.py     # fix_winding, fix_normals
-│   ├── _numpy_ops.py      # remove_degenerates, remove_floating_vertices, remove_small_shells
-│   ├── _pipeline.py       # Smart repair orchestration
-│   └── _plan.py           # Plan what steps would fix
+│   ├── __init__.py          # Public API: fix(), plan(), decimate(), individual ops
+│   ├── types.py             # FixConfig, DecimateConfig, Backend enum
+│   ├── _backends.py         # Backend availability checking
+│   ├── _decimate.py         # QEM decimation with quality weighting
+│   ├── _remesh.py           # Curvature-weighted adaptive decimation
+│   ├── _hole_fill.py        # Boundary loop extraction, ear-clip + ring fill
+│   ├── _intersection_ops.py # Self-intersection resolution (manifold3d / numpy)
+│   ├── _manifold_ops.py     # Non-manifold edge/vertex splitting
+│   ├── _normal_ops.py       # fix_winding, fix_normals
+│   ├── _numpy_ops.py        # remove_degenerates, remove_floating_vertices, remove_small_shells
+│   ├── _pipeline.py         # Smart repair orchestration
+│   └── _plan.py             # Plan what steps would fix
 │
 └── meshview/src/meshview/
-    ├── __init__.py        # Public API: build_defects_json(), export_viewer_data()
-    └── export.py          # Defect JSON + Three.js viewer data
+    ├── __init__.py          # Public API: build_defects_json(), export_viewer_data(), export_comparison()
+    ├── export.py            # Defect JSON + component labels + comparison export
+    └── viewer/
+        ├── index.html       # Single-pane defect viewer
+        └── compare.html     # 2-up comparison viewer with heatmap/components/wireframe
 ```
 
 `audit()` builds an `EdgeFaceMap` once, derives edge data and PCA, then threads shared structures to all sub-reports — no redundant computation across modules.
