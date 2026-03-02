@@ -27,6 +27,11 @@ _STEP_BACKENDS: dict[FixStepName, list[Backend]] = {
     FixStepName.REMOVE_SMALL_SHELLS: [Backend.NUMPY],
     FixStepName.FIX_WINDING: [Backend.TRIMESH],
     FixStepName.FIX_NORMALS: [Backend.TRIMESH],
+    # Phase 3
+    FixStepName.SPLIT_NON_MANIFOLD_EDGES: [Backend.PYMESHLAB, Backend.NUMPY],
+    FixStepName.SPLIT_NON_MANIFOLD_VERTICES: [Backend.PYMESHLAB, Backend.NUMPY],
+    FixStepName.FILL_HOLES: [Backend.PYMESHLAB, Backend.NUMPY],
+    FixStepName.RESOLVE_SELF_INTERSECTIONS: [Backend.MANIFOLD3D, Backend.NUMPY],
 }
 
 

@@ -11,6 +11,10 @@ Individual operations (all return new Trimesh, never mutate input):
     remove_small_shells(mesh, min_face_count?, min_face_ratio?) → Trimesh
     fix_winding(mesh) → Trimesh
     fix_normals(mesh) → Trimesh
+    split_non_manifold_edges(mesh, edge_pairs?) → Trimesh
+    split_non_manifold_vertices(mesh, vert_indices?) → Trimesh
+    fill_holes(mesh, boundary_edge_pairs?, max_hole_edges?) → Trimesh
+    resolve_self_intersections(mesh, intersection_pairs?) → Trimesh
 """
 
 from __future__ import annotations
@@ -21,6 +25,9 @@ from meshbench.types import MeshReport
 
 from meshfix._backends import available_backends
 from meshfix._decimate import decimate
+from meshfix._hole_fill import fill_holes
+from meshfix._intersection_ops import resolve_self_intersections
+from meshfix._manifold_ops import split_non_manifold_edges, split_non_manifold_vertices
 from meshfix._normal_ops import fix_normals, fix_winding
 from meshfix._numpy_ops import (
     remove_degenerates,
@@ -81,6 +88,7 @@ __all__ = [
     "adaptive_remesh",
     "available_backends",
     "decimate",
+    "fill_holes",
     "fix",
     "fix_normals",
     "fix_winding",
@@ -88,6 +96,9 @@ __all__ = [
     "remove_degenerates",
     "remove_floating_vertices",
     "remove_small_shells",
+    "resolve_self_intersections",
+    "split_non_manifold_edges",
+    "split_non_manifold_vertices",
     "Backend",
     "DecimateConfig",
     "DecimateResult",

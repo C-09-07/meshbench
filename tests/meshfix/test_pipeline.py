@@ -167,3 +167,89 @@ class TestFix:
         _, result = fix(unit_cube)
 
         assert result.total_duration_ms > 0
+
+
+class TestPhase3Plan:
+    def test_plans_nm_edge_split(self, nm_edge_mesh):
+        """NM edge mesh -> SPLIT_NON_MANIFOLD_EDGES planned."""
+        report = meshbench.audit(nm_edge_mesh, include_defects=True)
+        steps = plan(report)
+
+        assert FixStepName.SPLIT_NON_MANIFOLD_EDGES in steps
+
+    def test_plans_nm_vertex_split(self, bowtie_mesh):
+        """Bowtie mesh -> SPLIT_NON_MANIFOLD_VERTICES planned."""
+        report = meshbench.audit(bowtie_mesh, include_defects=True)
+        steps = plan(report)
+
+        assert FixStepName.SPLIT_NON_MANIFOLD_VERTICES in steps
+
+    def test_plans_fill_holes(self, open_box):
+        """Open box -> FILL_HOLES planned."""
+        report = meshbench.audit(open_box, include_defects=True)
+        steps = plan(report)
+
+        assert FixStepName.FILL_HOLES in steps
+
+    def test_plans_resolve_si(self, self_intersecting_mesh):
+        """Self-intersecting mesh -> RESOLVE_SELF_INTERSECTIONS planned."""
+        report = meshbench.audit(self_intersecting_mesh, include_defects=True)
+        steps = plan(report)
+
+        assert FixStepName.RESOLVE_SELF_INTERSECTIONS in steps
+
+    def test_disabled_via_config(self, nm_edge_mesh):
+        """Phase 3 config flags respected when disabled."""
+        report = meshbench.audit(nm_edge_mesh, include_defects=True)
+        config = FixConfig(
+            split_non_manifold_edges=False,
+            split_non_manifold_vertices=False,
+            fill_holes=False,
+            resolve_self_intersections=False,
+        )
+        steps = plan(report, config)
+
+        phase3_steps = {
+            FixStepName.SPLIT_NON_MANIFOLD_EDGES,
+            FixStepName.SPLIT_NON_MANIFOLD_VERTICES,
+            FixStepName.FILL_HOLES,
+            FixStepName.RESOLVE_SELF_INTERSECTIONS,
+        }
+        assert not any(s in phase3_steps for s in steps)
+
+    def test_step_order_phase3(self, nm_edge_mesh):
+        """Phase 1 before Phase 3 before normals."""
+        report = meshbench.audit(nm_edge_mesh, include_defects=True)
+        steps = plan(report)
+
+        # FIX_NORMALS should be last
+        assert steps[-1] == FixStepName.FIX_NORMALS
+
+        # Phase 3 steps should come before FIX_WINDING/FIX_NORMALS
+        if FixStepName.SPLIT_NON_MANIFOLD_EDGES in steps:
+            nm_idx = steps.index(FixStepName.SPLIT_NON_MANIFOLD_EDGES)
+            normals_idx = steps.index(FixStepName.FIX_NORMALS)
+            assert nm_idx < normals_idx
+
+
+class TestPhase3Fix:
+    def test_end_to_end_nm_edges(self, nm_edge_mesh):
+        """fix() resolves non-manifold edges."""
+        fixed, result = fix(nm_edge_mesh)
+
+        assert result.after is not None
+        assert result.after.manifold.non_manifold_edge_count == 0
+
+    def test_end_to_end_holes(self, open_box):
+        """fix() fills holes."""
+        fixed, result = fix(open_box)
+
+        assert result.after is not None
+        assert result.after.manifold.boundary_loop_count == 0
+
+    def test_end_to_end_bowtie(self, bowtie_mesh):
+        """fix() splits bowtie vertex."""
+        fixed, result = fix(bowtie_mesh)
+
+        assert result.after is not None
+        assert result.after.manifold.non_manifold_vertex_count == 0

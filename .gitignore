@@ -8,6 +8,7 @@ build/
 meshes/
 meshes_gen/
 output/
+outputs/
 generation/
 blender_compare/
 .DS_Store

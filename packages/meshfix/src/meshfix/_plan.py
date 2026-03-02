@@ -13,9 +13,13 @@ def plan_steps(report: MeshReport, config: FixConfig) -> list[FixStepName]:
     Steps are returned in execution order:
     1. Remove degenerates (index-based, safe to run first)
     2. Remove floating vertices (index-based)
-    3. Remove small shells (topology-based, runs on current mesh state)
-    4. Fix winding (operates on current mesh state)
-    5. Fix normals (always, cheap safety net)
+    3. Remove small shells (topology-based)
+    4. Split non-manifold edges (Phase 3 topology repair)
+    5. Split non-manifold vertices (Phase 3)
+    6. Fill holes (Phase 3)
+    7. Resolve self-intersections (Phase 3, last — needs manifold-ish input)
+    8. Fix winding (re-normalize after structural changes)
+    9. Fix normals (always, cheap safety net)
     """
     steps: list[FixStepName] = []
 
@@ -36,6 +40,23 @@ def plan_steps(report: MeshReport, config: FixConfig) -> list[FixStepName]:
     if config.remove_small_shells:
         if report.topology.component_count > 1:
             steps.append(FixStepName.REMOVE_SMALL_SHELLS)
+
+    # Phase 3: topology repair (after cleanup, before normalization)
+    if config.split_non_manifold_edges:
+        if report.manifold.non_manifold_edge_count > 0:
+            steps.append(FixStepName.SPLIT_NON_MANIFOLD_EDGES)
+
+    if config.split_non_manifold_vertices:
+        if report.manifold.non_manifold_vertex_count > 0:
+            steps.append(FixStepName.SPLIT_NON_MANIFOLD_VERTICES)
+
+    if config.fill_holes:
+        if report.manifold.boundary_loop_count > 0:
+            steps.append(FixStepName.FILL_HOLES)
+
+    if config.resolve_self_intersections:
+        if report.manifold.self_intersection_count > 0:
+            steps.append(FixStepName.RESOLVE_SELF_INTERSECTIONS)
 
     if config.fix_winding:
         if defects is not None and defects.flipped_face_pairs is not None:

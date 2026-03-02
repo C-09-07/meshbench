@@ -14,12 +14,11 @@ class FixStepName(Enum):
     REMOVE_SMALL_SHELLS = auto()
     FIX_WINDING = auto()
     FIX_NORMALS = auto()
-    # Phase 2+:
-    # SPLIT_NON_MANIFOLD_EDGES = auto()
-    # SPLIT_NON_MANIFOLD_VERTICES = auto()
-    # RESOLVE_SELF_INTERSECTIONS = auto()
-    # FILL_HOLES = auto()
-    # REMESH = auto()
+    # Phase 3
+    SPLIT_NON_MANIFOLD_EDGES = auto()
+    SPLIT_NON_MANIFOLD_VERTICES = auto()
+    FILL_HOLES = auto()
+    RESOLVE_SELF_INTERSECTIONS = auto()
 
 
 class Backend(Enum):
@@ -55,6 +54,12 @@ class FixConfig:
     min_shell_face_ratio: float = 0.01
     fix_winding: bool = True
     fix_normals: bool = True
+    # Phase 3
+    split_non_manifold_edges: bool = True
+    split_non_manifold_vertices: bool = True
+    fill_holes: bool = True
+    max_hole_edges: int = 100
+    resolve_self_intersections: bool = True
 
 
 @dataclass

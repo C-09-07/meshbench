@@ -10,12 +10,15 @@ import meshbench
 from meshbench.types import MeshReport
 
 from meshfix._backends import get_backend_for_step
+from meshfix._hole_fill import fill_holes
+from meshfix._intersection_ops import resolve_self_intersections
+from meshfix._manifold_ops import split_non_manifold_edges, split_non_manifold_vertices
+from meshfix._normal_ops import fix_normals, fix_winding
 from meshfix._numpy_ops import (
     remove_degenerates,
     remove_floating_vertices,
     remove_small_shells,
 )
-from meshfix._normal_ops import fix_normals, fix_winding
 from meshfix._plan import plan_steps
 from meshfix.types import FixConfig, FixResult, FixStep, FixStepName
 
@@ -66,6 +69,34 @@ def _execute_step(
 
     elif step_name == FixStepName.FIX_NORMALS:
         result_mesh = fix_normals(current)
+
+    elif step_name == FixStepName.SPLIT_NON_MANIFOLD_EDGES:
+        indices = None
+        if report.defects is not None:
+            indices = report.defects.non_manifold_edges
+        result_mesh = split_non_manifold_edges(current, edge_pairs=indices)
+
+    elif step_name == FixStepName.SPLIT_NON_MANIFOLD_VERTICES:
+        indices = None
+        if report.defects is not None:
+            indices = report.defects.non_manifold_vertices
+        result_mesh = split_non_manifold_vertices(current, vert_indices=indices)
+
+    elif step_name == FixStepName.FILL_HOLES:
+        indices = None
+        if report.defects is not None:
+            indices = report.defects.boundary_edges
+        result_mesh = fill_holes(
+            current,
+            boundary_edge_pairs=indices,
+            max_hole_edges=config.max_hole_edges,
+        )
+
+    elif step_name == FixStepName.RESOLVE_SELF_INTERSECTIONS:
+        pairs = None
+        if report.defects is not None:
+            pairs = report.defects.self_intersection_pairs
+        result_mesh = resolve_self_intersections(current, intersection_pairs=pairs)
 
     else:
         raise ValueError(f"Unknown step: {step_name}")
@@ -141,8 +172,9 @@ def run_pipeline(
 
         executed_steps.append(step)
 
-        # Once we remove faces/vertices, defect indices are invalidated
-        if step.faces_removed > 0 or step.vertices_removed > 0:
+        # Once mesh topology changes, defect indices are invalidated
+        if step.faces_removed > 0 or step.vertices_removed > 0 or \
+           step.vertices_added > 0 or step.faces_added > 0:
             use_defect_indices = False
 
     total_ms = (time.perf_counter() - t_start) * 1000

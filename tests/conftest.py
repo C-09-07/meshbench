@@ -99,3 +99,48 @@ def tapered_mesh() -> trimesh.Trimesh:
         faces=np.array(faces),
         process=False,
     )
+
+
+@pytest.fixture
+def bowtie_mesh() -> trimesh.Trimesh:
+    """Two triangles sharing a single vertex (non-manifold vertex / bowtie)."""
+    verts = np.array([
+        [0, 0, 0],
+        [1, 0, 0],
+        [0, 1, 0],
+        [0, -1, 0],
+        [-1, 0, 0],
+    ], dtype=float)
+    faces = np.array([[0, 1, 2], [0, 3, 4]])
+    return trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+
+
+@pytest.fixture
+def nm_edge_mesh() -> trimesh.Trimesh:
+    """Three triangles sharing one edge (non-manifold edge)."""
+    verts = np.array([
+        [0, 0, 0],
+        [1, 0, 0],
+        [0.5, 1, 0],
+        [0.5, -1, 0],
+        [0.5, 0, 1],
+    ], dtype=float)
+    faces = np.array([[0, 1, 2], [0, 1, 3], [0, 1, 4]])
+    return trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+
+
+@pytest.fixture
+def self_intersecting_mesh() -> trimesh.Trimesh:
+    """Two non-adjacent triangles that cross each other."""
+    verts = np.array([
+        # Triangle 1: in XY plane, z=0
+        [-1, -1, 0],
+        [1, -1, 0],
+        [0, 1, 0],
+        # Triangle 2: in XZ plane, y=0, shifted so no shared vertices
+        [-1, 0, -1],
+        [1, 0, -1],
+        [0, 0, 1],
+    ], dtype=float)
+    faces = np.array([[0, 1, 2], [3, 4, 5]])
+    return trimesh.Trimesh(vertices=verts, faces=faces, process=False)
