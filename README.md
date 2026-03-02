@@ -1,21 +1,38 @@
-# meshbench
+# meshx
 
-Geometric mesh quality analysis library. Extracts shape fingerprints, manifold integrity, normal consistency, topological metrics, per-face cell quality, and polycount efficiency from triangle meshes.
+Monorepo for geometric mesh analysis, repair, and visualization. Three packages:
 
-Built on [trimesh](https://trimesh.org/), pure NumPy — no PyVista or VTK required. Processes ~1M faces/sec on clean geometry.
+| Package | Version | Purpose |
+|---------|---------|---------|
+| **meshbench** | 1.1.0 | Quality analysis — fingerprints, manifold integrity, normals, topology, cell quality, feature edges, curvature |
+| **meshfix** | 0.1.0 | Targeted repair — degenerate removal, winding fixes, QEM decimation, adaptive remeshing |
+| **meshview** | 0.1.0 | Interactive Three.js viewer — defect visualization, data export |
+
+Built on [trimesh](https://trimesh.org/), pure NumPy/SciPy. Processes ~1M faces/sec on clean geometry.
 
 ## Installation
 
 ```bash
-pip install -e ".[dev]"
+# uv workspace (recommended)
+uv sync --all-packages
 
-# Optional: ~5x faster manifold analysis with numba
-pip install -e ".[fast]"
+# Or install individual packages
+pip install -e packages/meshbench
+pip install -e packages/meshfix
+pip install -e packages/meshview
+
+# Optional: ~5x faster manifold analysis
+pip install meshbench[fast]          # numba
+
+# Optional: better decimation quality
+pip install meshfix[pymeshlab]       # pymeshlab QEM with quality weighting
 ```
 
 Requires Python 3.11+.
 
 ## Quick Start
+
+### Analyze a mesh
 
 ```python
 import meshbench
@@ -27,21 +44,58 @@ print(f"Watertight: {report.manifold.is_watertight}")
 print(f"Genus: {report.topology.genus}")
 print(f"Winding consistency: {report.normals.winding_consistency:.3f}")
 print(f"Aspect ratio (mean): {report.cell.aspect_ratio_mean:.2f}")
-print(f"Min angle (worst): {report.cell.min_angle_min:.1f}°")
+print(f"Min angle (worst): {report.cell.min_angle_min:.1f}")
 ```
 
-## API
+### Feature edges and curvature
 
-### `meshbench.load(path, force_geometry=False) -> Trimesh`
+```python
+feat = meshbench.compute_feature_report(mesh)
+print(f"Feature edges: {feat.feature_edge_count} ({feat.feature_edge_ratio:.1%})")
 
-Load a mesh file (STL, OBJ, GLB, PLY, etc.). Handles `Scene` → `Trimesh` flattening automatically.
+curv = meshbench.compute_curvature_report(mesh)
+print(f"Mean |H|: {curv.mean_curvature_abs_avg:.4f}, flat: {curv.flat_vertex_ratio:.1%}")
+```
 
-- `force_geometry=True` strips textures/materials, rebuilds bare geometry
-- Raises `ValueError` on failure
+### Repair a mesh
 
-### `meshbench.audit(mesh) -> MeshReport`
+```python
+import meshfix
 
-Full analysis. Returns a `MeshReport` with sub-reports:
+fixed, result = meshfix.fix(mesh, report)
+print(f"Steps: {[s.name for s in result.steps]}")
+print(f"Faces: {result.faces_before} -> {result.faces_after}")
+```
+
+### Decimate
+
+```python
+# Uniform QEM decimation (with quality weighting via pymeshlab)
+decimated, result = meshfix.decimate(mesh, target_ratio=0.5)
+print(f"{result.faces_before} -> {result.faces_after} faces")
+print(f"Feature edges: {result.feature_edges_before} -> {result.feature_edges_after}")
+
+# Curvature-weighted: fewer faces on flat, more on curved
+adaptive, result = meshfix.adaptive_remesh(mesh, target_ratio=0.25, curvature_weight=2.0)
+```
+
+### Score against a profile
+
+```python
+card = meshbench.score(report, profile="print")  # or "animation", "simulation", "ai_output"
+for check in card.checks:
+    print(f"  {check.status.value:4s}  {check.label}: {check.detail}")
+```
+
+## meshbench API
+
+### `load(path, force_geometry=False) -> Trimesh`
+
+Load a mesh file (STL, OBJ, GLB, PLY, etc.). Handles `Scene` -> `Trimesh` flattening.
+
+### `audit(mesh, include_defects=False) -> MeshReport`
+
+Full analysis. Returns sub-reports:
 
 | Sub-report | Key metrics |
 |---|---|
@@ -52,31 +106,87 @@ Full analysis. Returns a `MeshReport` with sub-reports:
 | **`density`** | vertices per area, face density variance |
 | **`cell`** | aspect ratio (mean/std/max/p95), min angle (mean/std/min/p05) |
 
-### `meshbench.fingerprint(mesh) -> Fingerprint`
+### Feature edges
 
-Shape fingerprint only.
+```python
+dihedral_angles(mesh) -> tuple[ndarray, ndarray]     # (edges, angles_deg)
+feature_edges(mesh, feature_angle=30.0) -> ndarray    # (N, 2) vertex pairs
+compute_feature_report(mesh) -> FeatureReport
+```
 
-### `meshbench.manifold(mesh) -> ManifoldReport`
+### Curvature
 
-Manifold analysis only.
+```python
+discrete_mean_curvature(mesh) -> ndarray              # per-vertex |H|
+discrete_gaussian_curvature(mesh) -> ndarray           # per-vertex K
+per_face_curvature(mesh) -> ndarray                    # averaged to faces
+compute_curvature_report(mesh) -> CurvatureReport
+```
+
+### Other
+
+```python
+fingerprint(mesh) -> Fingerprint
+manifold(mesh) -> ManifoldReport
+score(report, profile="print") -> ScoreCard
+```
+
+## meshfix API
+
+### `fix(mesh, report=None, config=None) -> (Trimesh, FixResult)`
+
+Auto-repair driven by meshbench analysis. Runs only the steps the mesh needs.
+
+### `plan(report, config=None) -> list[FixStepName]`
+
+Preview which steps `fix()` would run without executing them.
+
+### `decimate(mesh, target_faces=None, target_ratio=None, config=None) -> (Trimesh, DecimateResult)`
+
+QEM decimation with per-vertex quality weighting. Uses pymeshlab when available (biases QEM to preserve high-curvature vertices and feature edges), falls back to fast-simplification.
+
+### `adaptive_remesh(mesh, target_faces=None, target_ratio=None, curvature_weight=1.0, feature_angle=30.0) -> (Trimesh, DecimateResult)`
+
+Curvature-weighted decimation. Same backend as `decimate()` but exposes `curvature_weight` to control how strongly curvature biases the importance map.
+
+### Individual operations
+
+All return new Trimesh, never mutate input:
+
+```python
+remove_degenerates(mesh, face_indices=None) -> Trimesh
+remove_floating_vertices(mesh, vert_indices=None) -> Trimesh
+remove_small_shells(mesh, min_face_count=None, min_face_ratio=None) -> Trimesh
+fix_winding(mesh) -> Trimesh
+fix_normals(mesh) -> Trimesh
+```
+
+### `available_backends() -> dict[Backend, bool]`
+
+Check which optional backends are installed (pymeshlab, manifold3d, pynanoinstantmeshes).
+
+## meshview API
+
+### `export_viewer_data(mesh, report, dir) -> Path`
+
+Export mesh + defect data for the interactive Three.js viewer.
+
+### `build_defects_json(report) -> dict`
+
+Build defect overlay data from a MeshReport.
 
 ## JSON Serialization
 
-All reports have a `.to_dict()` method that returns a JSON-serializable dict:
+All reports have `.to_dict()` returning JSON-serializable dicts. Handles numpy types automatically.
 
 ```python
 import json, meshbench
 
 report = meshbench.audit(mesh)
-d = report.to_dict()
-print(json.dumps(d, indent=2))
+print(json.dumps(report.to_dict(), indent=2))
 ```
 
-Handles `numpy.ndarray` → `list`, `numpy.integer` → `int`, `numpy.floating` → `float`, nested dataclasses → `dict`, and `None` passthrough automatically.
-
 ## Benchmarking
-
-Run the benchmark suite against your mesh corpus:
 
 ```bash
 # Audit all meshes, compare AI sources against a reference
@@ -100,13 +210,7 @@ meshes/
 └── tripo3d/       # 10 GLBs — Tripo3D
 ```
 
-### Benchmark output
-
-- **JSON report** with per-mesh audit data, per-source aggregates, failure classification, and delta vs reference
-- **Summary table** comparing sources side-by-side
-- **Charts**: radar quality profile, box plot distributions, failure mode frequency, winding vs density scatter, manifold status stacked bars
-
-### Results: 445 meshes across 8 sources (v1.0.0)
+### Results: 445 meshes across 8 sources
 
 Reference: Thingi10k (real-world 3D prints). Delta columns show difference from reference.
 
@@ -123,17 +227,6 @@ meshyai             14  100.0%  0.995   0.328   340.5     1.10     237       0  
 tripo3d             10  60.0%   0.998   0.246    11.6     1.02       2       0   0.459     12     13
 ```
 
-**Key findings:**
-
-| Metric | Pro meshes (thingi10k, abc, khronos) | AI-generated |
-|--------|--------------------------------------|-------------|
-| **Watertight** | 0-85% (abc is CAD = mostly open) | 0-100% (varies wildly by generator) |
-| **Winding consistency** | 0.951-1.000 | 0.995-1.000 (AI is actually consistent) |
-| **Degenerate faces** | 0-45 | 2-551K (Hunyuan3D: ~50% of faces degenerate) |
-| **Genus** | 0-5.7 | 0-340 (MeshyAI: extreme topological noise) |
-| **Non-manifold** | Common in all sources | SF3D: 100% have non-manifold vertices |
-| **Face density variance** | 0.12-20.9 | 0.11-8.2 (AI is more uniform) |
-
 **Per-generator failure signatures:**
 
 - **Hunyuan3D** (Tencent): Massive face counts (up to 3.6M), 100% have non-manifold geometry and degenerate faces (mean 551K degenerates/mesh). Good winding but terrible cell quality.
@@ -144,7 +237,7 @@ tripo3d             10  60.0%   0.998   0.246    11.6     1.02       2       0  
 
 ## Performance
 
-`audit()` uses vectorized NumPy/SciPy throughout, with an optional [numba](https://numba.pydata.org/) JIT kernel for the non-manifold vertex check (`pip install meshbench[fast]`).
+`audit()` uses vectorized NumPy/SciPy throughout, with an optional [numba](https://numba.pydata.org/) JIT kernel for the non-manifold vertex check.
 
 | Mesh | Faces | Time | Throughput |
 |------|-------|------|-----------|
@@ -154,32 +247,50 @@ tripo3d             10  60.0%   0.998   0.246    11.6     1.02       2       0  
 | Hunyuan3D GLB (messy, 50% degenerate) | 1.3M | 2.3s | 570K f/s |
 | TripoSG GLB (very large) | 4.6M | 6.2s | 750K f/s |
 
-Throughput scales with mesh complexity — clean manifold meshes hit ~1M f/s, heavily non-manifold AI meshes with degenerate faces drop to ~600K f/s. Without numba, expect roughly 5x slower manifold analysis on large meshes.
-
 ## Running Tests
 
 ```bash
-pytest tests/ -v
+uv run pytest tests/ -v
 ```
 
-84 tests covering all modules.
+215 tests across all packages.
 
 ## Architecture
 
 ```
-src/meshbench/
-├── __init__.py      # Public API: audit(), fingerprint(), manifold(), load()
-├── types.py         # Dataclasses with _ReportMixin (to_dict)
-├── loading.py       # Mesh file I/O with scene flattening
-├── _edges.py        # Vectorized edge utilities + EdgeFaceMap (shared)
-├── _entropy.py      # Shannon entropy helper (shared)
-├── _numba_kernels.py # Optional JIT-compiled kernels (numba)
-├── _cell.py         # Per-face aspect ratio + min angle
-├── density.py       # Polycount efficiency metrics
-├── fingerprint.py   # PCA-based shape descriptors
-├── manifold.py      # Boundary/non-manifold analysis
-├── normals.py       # Face normal consistency
-└── topology.py      # Genus, valence, degenerates, components
+packages/
+├── meshbench/src/meshbench/
+│   ├── __init__.py        # Public API: audit(), fingerprint(), manifold(), score(), load()
+│   ├── types.py           # Report dataclasses with _ReportMixin (to_dict)
+│   ├── loading.py         # Mesh file I/O with scene flattening
+│   ├── _edges.py          # Vectorized edge utilities + EdgeFaceMap (shared)
+│   ├── _entropy.py        # Shannon entropy helper (shared)
+│   ├── _numba_kernels.py  # Optional JIT-compiled kernels (numba)
+│   ├── _cell.py           # Per-face aspect ratio + min angle
+│   ├── _intersections.py  # Self-intersection detection (sweep-and-prune + SAT)
+│   ├── curvature.py       # Cotangent Laplacian mean, angle deficit Gaussian
+│   ├── density.py         # Polycount efficiency metrics
+│   ├── features.py        # Dihedral angles, feature edge detection
+│   ├── fingerprint.py     # PCA-based shape descriptors
+│   ├── manifold.py        # Boundary/non-manifold analysis
+│   ├── normals.py         # Face normal consistency
+│   ├── scoring.py         # Profile-based scoring
+│   └── topology.py        # Genus, valence, degenerates, components
+│
+├── meshfix/src/meshfix/
+│   ├── __init__.py        # Public API: fix(), plan(), decimate(), adaptive_remesh()
+│   ├── types.py           # FixConfig, DecimateConfig, Backend enum
+│   ├── _backends.py       # Backend availability checking
+│   ├── _decimate.py       # QEM decimation with quality weighting
+│   ├── _remesh.py         # Curvature-weighted adaptive decimation
+│   ├── _normal_ops.py     # fix_winding, fix_normals
+│   ├── _numpy_ops.py      # remove_degenerates, remove_floating_vertices, remove_small_shells
+│   ├── _pipeline.py       # Smart repair orchestration
+│   └── _plan.py           # Plan what steps would fix
+│
+└── meshview/src/meshview/
+    ├── __init__.py        # Public API: build_defects_json(), export_viewer_data()
+    └── export.py          # Defect JSON + Three.js viewer data
 ```
 
 `audit()` builds an `EdgeFaceMap` once, derives edge data and PCA, then threads shared structures to all sub-reports — no redundant computation across modules.
