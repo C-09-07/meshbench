@@ -8,6 +8,8 @@ from pathlib import Path
 
 import numpy as np
 import trimesh
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import connected_components as sparse_cc
 
 from meshbench.types import Defects, MeshReport, ScoreCard
 
@@ -34,6 +36,29 @@ def _serialize_array(arr: np.ndarray | None) -> list | None:
     if arr is None:
         return None
     return _sanitize_array(arr)
+
+
+def _compute_component_labels(mesh: trimesh.Trimesh) -> np.ndarray:
+    """Return per-face component ID array (length F).
+
+    Uses scipy.sparse connected_components on face adjacency (same pattern
+    as meshbench/topology.py:component_sizes).
+    """
+    n_faces = mesh.faces.shape[0]
+    if n_faces == 0:
+        return np.array([], dtype=np.intp)
+
+    adj_pairs = mesh.face_adjacency
+    if len(adj_pairs) == 0:
+        # Triangle soup — each face is its own component
+        return np.arange(n_faces, dtype=np.intp)
+
+    rows = np.concatenate([adj_pairs[:, 0], adj_pairs[:, 1]])
+    cols = np.concatenate([adj_pairs[:, 1], adj_pairs[:, 0]])
+    data = np.ones(len(rows), dtype=np.int8)
+    graph = csr_matrix((data, (rows, cols)), shape=(n_faces, n_faces))
+    _n_comp, labels = sparse_cc(graph, directed=False)
+    return labels
 
 
 def _build_metrics_section(defects: Defects) -> dict:
@@ -108,12 +133,14 @@ def _build_score_section(score_card: ScoreCard) -> dict:
 def build_defects_json(
     report: MeshReport,
     score_card: ScoreCard | None = None,
+    component_labels: np.ndarray | None = None,
 ) -> dict:
     """Build the complete defects.json structure from a report with defects.
 
     Args:
         report: MeshReport with defects populated (include_defects=True).
         score_card: Optional ScoreCard to include in output.
+        component_labels: Optional per-face component IDs (length F).
 
     Returns:
         JSON-serializable dict.
@@ -126,10 +153,19 @@ def build_defects_json(
             "report.defects is None — call audit(mesh, include_defects=True)"
         )
 
+    metrics = _build_metrics_section(report.defects)
+
+    if component_labels is not None:
+        n_comp = int(component_labels.max() + 1) if len(component_labels) > 0 else 0
+        metrics["component_id"] = {
+            "values": component_labels.tolist(),
+            "stats": {"count": n_comp},
+        }
+
     result: dict = {
         "face_count": report.face_count,
         "vertex_count": report.vertex_count,
-        "metrics": _build_metrics_section(report.defects),
+        "metrics": metrics,
         "defects": _build_defects_section(report.defects),
     }
 
@@ -182,5 +218,60 @@ def export_viewer_data(
     viewer_src = _VIEWER_DIR / "index.html"
     viewer_dst = out / "index.html"
     shutil.copy2(str(viewer_src), str(viewer_dst))
+
+    return out
+
+
+def export_comparison(
+    mesh_before: trimesh.Trimesh,
+    report_before: MeshReport,
+    mesh_after: trimesh.Trimesh,
+    report_after: MeshReport,
+    output_dir: str | Path,
+    mesh_format: str = "glb",
+    profile: str = "print",
+) -> Path:
+    """Write before/after mesh comparison data + 2-up viewer HTML.
+
+    Args:
+        mesh_before: Original mesh.
+        report_before: MeshReport for original (include_defects=True).
+        mesh_after: Repaired mesh.
+        report_after: MeshReport for repaired (include_defects=True).
+        output_dir: Directory to write files into (created if needed).
+        mesh_format: Export format for mesh files ("glb" or "stl").
+        profile: Scoring profile for the ScoreCards.
+
+    Returns:
+        Path to the output directory.
+
+    Raises:
+        ValueError: If either report.defects is None.
+    """
+    from meshbench.scoring import compute_score
+
+    out = Path(output_dir)
+
+    for label, mesh, report in [
+        ("before", mesh_before, report_before),
+        ("after", mesh_after, report_after),
+    ]:
+        sub = out / label
+        sub.mkdir(parents=True, exist_ok=True)
+
+        # Export mesh geometry
+        mesh.export(str(sub / f"mesh.{mesh_format}"))
+
+        # Build defects JSON with component labels
+        score_card = compute_score(report, profile)
+        labels = _compute_component_labels(mesh)
+        data = build_defects_json(report, score_card, component_labels=labels)
+
+        with open(sub / "defects.json", "w") as f:
+            json.dump(data, f)
+
+    # Copy comparison viewer HTML
+    viewer_src = _VIEWER_DIR / "compare.html"
+    shutil.copy2(str(viewer_src), str(out / "compare.html"))
 
     return out

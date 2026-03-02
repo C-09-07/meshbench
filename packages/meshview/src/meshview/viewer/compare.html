@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>meshbench compare</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #1a1a2e; color: #e0e0e0; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
+
+  /* Top toolbar */
+  #toolbar { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: #16213e; border-bottom: 1px solid #0f3460; flex-shrink: 0; }
+  #toolbar label { font-size: 13px; color: #a0a0c0; }
+  #toolbar select { background: #0f3460; color: #e0e0e0; border: 1px solid #333; padding: 4px 8px; border-radius: 4px; font-size: 13px; }
+
+  /* Two-up viewport area */
+  #viewports { display: flex; flex: 1; min-height: 0; }
+  .pane { position: relative; flex: 1; }
+  .pane canvas { width: 100%; height: 100%; display: block; cursor: grab; }
+  .pane canvas:active { cursor: grabbing; }
+  .divider { width: 1px; background: #0f3460; flex-shrink: 0; }
+
+  /* Score HUD overlay */
+  .hud { position: absolute; top: 10px; left: 10px; background: rgba(22,33,62,0.92); padding: 8px 12px; border-radius: 6px; font-size: 12px; border: 1px solid #0f3460; pointer-events: none; z-index: 10; }
+  .hud .label { font-size: 14px; font-weight: bold; margin-bottom: 4px; }
+  .hud .stat { color: #a0a0c0; }
+  .grade-badge { display: inline-block; padding: 1px 8px; border-radius: 4px; font-weight: bold; margin-left: 6px; font-size: 16px; }
+  .grade-A { background: #27ae60; color: #fff; }
+  .grade-B { background: #2ecc71; color: #fff; }
+  .grade-C { background: #f39c12; color: #fff; }
+  .grade-D { background: #e67e22; color: #fff; }
+  .grade-F { background: #e74c3c; color: #fff; }
+
+  /* Summary bar */
+  #summary { display: flex; flex-wrap: wrap; gap: 16px; padding: 8px 16px; background: #16213e; border-top: 1px solid #0f3460; font-size: 13px; flex-shrink: 0; }
+  #summary .item { color: #a0a0c0; }
+  #summary .item .val { color: #e0e0e0; font-weight: bold; }
+  #summary .item .improved { color: #27ae60; }
+  #summary .item .worsened { color: #e74c3c; }
+
+  /* Loading overlay */
+  #loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #1a1a2e; z-index: 100; font-size: 18px; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="loading">Loading meshes...</div>
+<div id="toolbar">
+  <label>Mode</label>
+  <select id="mode-select">
+    <option value="heatmap" selected>Heatmap</option>
+    <option value="components">Components</option>
+    <option value="defects">Defects</option>
+    <option value="solid">Solid</option>
+  </select>
+  <label>Metric</label>
+  <select id="metric-select">
+    <option value="aspect_ratio" selected>Aspect Ratio</option>
+    <option value="min_angle">Min Angle</option>
+    <option value="max_angle">Max Angle</option>
+    <option value="skewness">Skewness</option>
+  </select>
+</div>
+<div id="viewports">
+  <div class="pane" id="pane-before">
+    <canvas id="canvas-before"></canvas>
+    <div class="hud" id="hud-before"></div>
+  </div>
+  <div class="divider"></div>
+  <div class="pane" id="pane-after">
+    <canvas id="canvas-after"></canvas>
+    <div class="hud" id="hud-after"></div>
+  </div>
+</div>
+<div id="summary"></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+// --- State per panel ---
+const panels = {};  // 'before' | 'after' -> { scene, renderer, meshGeo, colorAttr, baseColors, overlays, defectsData }
+
+// --- Shared camera + controls ---
+const camera = new THREE.PerspectiveCamera(50, 2, 0.01, 1000);
+camera.position.set(0, 1.5, 3);
+
+const canvasBefore = document.getElementById('canvas-before');
+const canvasAfter = document.getElementById('canvas-after');
+
+const controls = new OrbitControls(camera, canvasBefore);
+controls.enableDamping = true;
+
+// Forward events from right canvas to controls
+for (const evtType of ['pointerdown', 'pointermove', 'pointerup', 'wheel']) {
+  canvasAfter.addEventListener(evtType, (e) => {
+    canvasBefore.dispatchEvent(new e.constructor(e.type, e));
+  });
+}
+
+// --- Create panel ---
+function createPanel(name, canvas) {
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setClearColor(0x1a1a2e);
+
+  const scene = new THREE.Scene();
+  scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+  const d1 = new THREE.DirectionalLight(0xffffff, 0.8);
+  d1.position.set(5, 10, 7);
+  scene.add(d1);
+  const d2 = new THREE.DirectionalLight(0xffffff, 0.3);
+  d2.position.set(-5, -3, -5);
+  scene.add(d2);
+
+  panels[name] = { scene, renderer, meshGeo: null, colorAttr: null, baseColors: null, overlays: {}, defectsData: null, normalizeRadius: 1, normalizeCenter: new THREE.Vector3() };
+}
+
+createPanel('before', canvasBefore);
+createPanel('after', canvasAfter);
+
+// --- Load mesh + defects for one panel ---
+async function loadPanel(name, baseUrl) {
+  const panel = panels[name];
+  const [gltf, jsonData] = await Promise.all([
+    new Promise((resolve, reject) => {
+      new GLTFLoader().load(baseUrl + '/mesh.glb', resolve, undefined, reject);
+    }),
+    fetch(baseUrl + '/defects.json').then(r => r.json()),
+  ]);
+  panel.defectsData = jsonData;
+
+  let srcGeo = null;
+  gltf.scene.traverse(child => { if (!srcGeo && child.isMesh) srcGeo = child.geometry; });
+  if (!srcGeo) return;
+
+  const meshGeo = srcGeo.index ? srcGeo.toNonIndexed() : srcGeo.clone();
+  meshGeo.computeVertexNormals();
+  meshGeo.computeBoundingSphere();
+  panel.meshGeo = meshGeo;
+
+  // Normalize to unit bounding sphere at origin
+  const { center, radius } = meshGeo.boundingSphere;
+  panel.normalizeRadius = radius;
+  panel.normalizeCenter = center.clone();
+  const posArr = meshGeo.attributes.position.array;
+  for (let i = 0; i < posArr.length; i += 3) {
+    posArr[i]     = (posArr[i] - center.x) / radius;
+    posArr[i + 1] = (posArr[i + 1] - center.y) / radius;
+    posArr[i + 2] = (posArr[i + 2] - center.z) / radius;
+  }
+  meshGeo.attributes.position.needsUpdate = true;
+  meshGeo.computeBoundingSphere();
+
+  const nVerts = meshGeo.attributes.position.count;
+  const baseColors = new Float32Array(nVerts * 3);
+  baseColors.fill(0.6);
+  meshGeo.setAttribute('color', new THREE.BufferAttribute(baseColors.slice(), 3));
+  panel.colorAttr = meshGeo.attributes.color;
+  panel.baseColors = baseColors;
+
+  const mat = new THREE.MeshPhongMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide });
+  const meshObj = new THREE.Mesh(meshGeo, mat);
+  panel.scene.add(meshObj);
+
+  // Build defect overlays (initially hidden)
+  buildDefectOverlays(panel, meshGeo, gltf);
+}
+
+// --- Defect overlays (same approach as index.html) ---
+function buildDefectOverlays(panel, geo, gltf) {
+  const pos = geo.attributes.position;  // already normalized
+  const data = panel.defectsData;
+  const nc = panel.normalizeCenter;
+  const nr = panel.normalizeRadius;
+
+  // Get original indexed positions for vertex/edge overlays
+  let origPos = null;
+  gltf.scene.traverse(child => { if (!origPos && child.isMesh) { origPos = child.geometry.attributes.position; } });
+
+  // Helper: normalize an original vertex position
+  function normVert(vi) {
+    return [
+      (origPos.getX(vi) - nc.x) / nr,
+      (origPos.getY(vi) - nc.y) / nr,
+      (origPos.getZ(vi) - nc.z) / nr,
+    ];
+  }
+
+  // Degenerate faces — magenta (use non-indexed positions, already normalized)
+  if (data.defects.degenerate_faces) {
+    const indices = data.defects.degenerate_faces;
+    const pts = [];
+    for (const fi of indices) {
+      for (let v = 0; v < 3; v++) {
+        const idx = fi * 3 + v;
+        if (idx < pos.count) pts.push(pos.getX(idx), pos.getY(idx), pos.getZ(idx));
+      }
+    }
+    if (pts.length > 0) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+      const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: 0xff00ff, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthTest: false }));
+      m.visible = false;
+      panel.scene.add(m);
+      panel.overlays['degen'] = m;
+    }
+  }
+
+  // Non-manifold vertices — red spheres
+  if (data.defects.non_manifold_vertices && origPos) {
+    const indices = data.defects.non_manifold_vertices;
+    const sphereGeo = new THREE.SphereGeometry(0.01, 6, 6);
+    const sphereMat = new THREE.MeshBasicMaterial({ color: 0xff3333, depthTest: false });
+    const group = new THREE.Group();
+    for (const vi of indices) {
+      if (vi < origPos.count) {
+        const [x, y, z] = normVert(vi);
+        const s = new THREE.Mesh(sphereGeo, sphereMat);
+        s.position.set(x, y, z);
+        group.add(s);
+      }
+    }
+    group.visible = false;
+    panel.scene.add(group);
+    panel.overlays['nm-vert'] = group;
+  }
+
+  // Edge overlays (boundary, non-manifold edges)
+  function addEdgeOverlay(name, edgeList, color) {
+    if (!edgeList || !origPos) return;
+    const pts = [];
+    for (const [v0, v1] of edgeList) {
+      if (v0 < origPos.count && v1 < origPos.count) {
+        const [x0, y0, z0] = normVert(v0);
+        const [x1, y1, z1] = normVert(v1);
+        pts.push(x0, y0, z0, x1, y1, z1);
+      }
+    }
+    if (pts.length > 0) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+      const line = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color, linewidth: 2, depthTest: false }));
+      line.visible = false;
+      panel.scene.add(line);
+      panel.overlays[name] = line;
+    }
+  }
+
+  addEdgeOverlay('nm-edge', data.defects.non_manifold_edges, 0xff6600);
+  addEdgeOverlay('boundary', data.defects.boundary_edges, 0x00ccff);
+
+  // Self-intersection pairs — yellow (use non-indexed positions, already normalized)
+  if (data.defects.self_intersection_pairs) {
+    const pairs = data.defects.self_intersection_pairs;
+    const pts = [];
+    const seen = new Set();
+    for (const [fi, fj] of pairs) {
+      for (const f of [fi, fj]) {
+        if (seen.has(f)) continue;
+        seen.add(f);
+        for (let v = 0; v < 3; v++) {
+          const idx = f * 3 + v;
+          if (idx < pos.count) pts.push(pos.getX(idx), pos.getY(idx), pos.getZ(idx));
+        }
+      }
+    }
+    if (pts.length > 0) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+      const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthTest: false }));
+      m.visible = false;
+      panel.scene.add(m);
+      panel.overlays['si'] = m;
+    }
+  }
+}
+
+// --- Heatmap coloring ---
+function hslToRgb(h, s, l) {
+  let r, g, b;
+  if (s === 0) { r = g = b = l; }
+  else {
+    const hue2rgb = (p, q, t) => { if (t < 0) t += 1; if (t > 1) t -= 1; if (t < 1/6) return p + (q - p) * 6 * t; if (t < 1/2) return q; if (t < 2/3) return p + (q - p) * (2/3 - t) * 6; return p; };
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    r = hue2rgb(p, q, h + 1/3);
+    g = hue2rgb(p, q, h);
+    b = hue2rgb(p, q, h - 1/3);
+  }
+  return [r, g, b];
+}
+
+function getHeatmapColor(t) {
+  // t in [0,1]: 0=good(green), 0.5=warning(yellow), 1=bad(red)
+  t = Math.max(0, Math.min(1, t));
+  if (t <= 0.5) {
+    const f = t / 0.5;
+    return [0.153 + f * (0.953 - 0.153), 0.682 + f * (0.612 - 0.682), 0.376 + f * (0.071 - 0.376)];
+  } else {
+    const f = (t - 0.5) / 0.5;
+    return [0.953 + f * (0.906 - 0.953), 0.612 + f * (0.298 - 0.612), 0.071 + f * (0.235 - 0.071)];
+  }
+}
+
+function getComponentColor(id) {
+  const hue = (id * 0.618033) % 1.0;
+  return hslToRgb(hue, 0.7, 0.6);
+}
+
+// --- Apply view mode ---
+function applyViewMode() {
+  const mode = document.getElementById('mode-select').value;
+  const metricSelect = document.getElementById('metric-select');
+  metricSelect.style.display = mode === 'heatmap' ? '' : 'none';
+  metricSelect.previousElementSibling.style.display = mode === 'heatmap' ? '' : 'none';
+
+  // Compute combined min/max for heatmap normalization
+  let combinedMin = Infinity, combinedMax = -Infinity;
+  if (mode === 'heatmap') {
+    const metric = metricSelect.value;
+    for (const name of ['before', 'after']) {
+      const data = panels[name].defectsData;
+      if (data && data.metrics[metric]) {
+        const vals = data.metrics[metric].values;
+        for (const v of vals) {
+          if (v !== null && v !== undefined && isFinite(v)) {
+            if (v < combinedMin) combinedMin = v;
+            if (v > combinedMax) combinedMax = v;
+          }
+        }
+      }
+    }
+  }
+
+  for (const name of ['before', 'after']) {
+    const panel = panels[name];
+    if (!panel.colorAttr || !panel.defectsData) continue;
+
+    const colors = panel.colorAttr;
+    const data = panel.defectsData;
+
+    // Hide all defect overlays first
+    for (const obj of Object.values(panel.overlays)) obj.visible = false;
+
+    if (mode === 'solid') {
+      // Uniform gray
+      colors.array.set(panel.baseColors);
+
+    } else if (mode === 'heatmap') {
+      const metric = metricSelect.value;
+      colors.array.set(panel.baseColors);
+
+      if (data.metrics[metric] && combinedMax > combinedMin) {
+        const vals = data.metrics[metric].values;
+        const range = combinedMax - combinedMin;
+        const invert = (metric === 'min_angle');
+
+        for (let fi = 0; fi < vals.length; fi++) {
+          if (vals[fi] === null || vals[fi] === undefined) continue;
+          let t = (vals[fi] - combinedMin) / range;
+          if (invert) t = 1.0 - t;
+          const [r, g, b] = getHeatmapColor(t);
+          for (let v = 0; v < 3; v++) {
+            const idx = (fi * 3 + v) * 3;
+            colors.array[idx] = r;
+            colors.array[idx + 1] = g;
+            colors.array[idx + 2] = b;
+          }
+        }
+      }
+
+    } else if (mode === 'components') {
+      if (data.metrics.component_id) {
+        const ids = data.metrics.component_id.values;
+        for (let fi = 0; fi < ids.length; fi++) {
+          const [r, g, b] = getComponentColor(ids[fi]);
+          for (let v = 0; v < 3; v++) {
+            const idx = (fi * 3 + v) * 3;
+            colors.array[idx] = r;
+            colors.array[idx + 1] = g;
+            colors.array[idx + 2] = b;
+          }
+        }
+      } else {
+        colors.array.set(panel.baseColors);
+      }
+
+    } else if (mode === 'defects') {
+      colors.array.set(panel.baseColors);
+      // Show all defect overlays
+      for (const obj of Object.values(panel.overlays)) obj.visible = true;
+    }
+
+    colors.needsUpdate = true;
+  }
+}
+
+// --- Score HUD ---
+function renderHUD(name) {
+  const panel = panels[name];
+  const hud = document.getElementById('hud-' + name);
+  const data = panel.defectsData;
+  if (!data) { hud.innerHTML = ''; return; }
+
+  const label = name.charAt(0).toUpperCase() + name.slice(1);
+  let html = `<div class="label">${label}`;
+
+  if (data.score) {
+    const g = data.score.grade;
+    html += ` <span class="grade-badge grade-${g}">${g}</span> <span style="font-size:12px;color:#a0a0c0">(${data.score.score})</span>`;
+  }
+  html += '</div>';
+
+  const fc = data.face_count.toLocaleString();
+  const vc = data.vertex_count.toLocaleString();
+  const cc = data.metrics.component_id ? data.metrics.component_id.stats.count.toLocaleString() : '?';
+  html += `<div class="stat">${fc} faces, ${vc} verts, ${cc} components</div>`;
+
+  hud.innerHTML = html;
+}
+
+// --- Summary bar ---
+function renderSummary() {
+  const bar = document.getElementById('summary');
+  const b = panels.before.defectsData;
+  const a = panels.after.defectsData;
+  if (!b || !a) return;
+
+  function delta(bv, av, label, lowerIsBetter = true) {
+    const bStr = typeof bv === 'number' ? bv.toLocaleString() : String(bv);
+    const aStr = typeof av === 'number' ? av.toLocaleString() : String(av);
+    let cls = '';
+    if (typeof bv === 'number' && typeof av === 'number') {
+      cls = lowerIsBetter ? (av < bv ? 'improved' : av > bv ? 'worsened' : '') : (av > bv ? 'improved' : av < bv ? 'worsened' : '');
+    } else if (typeof bv === 'boolean') {
+      cls = av && !bv ? 'improved' : !av && bv ? 'worsened' : '';
+    }
+    return `<span class="item">${label}: <span class="val">${bStr}</span> &rarr; <span class="val ${cls}">${aStr}</span></span>`;
+  }
+
+  const bDegen = b.defects.degenerate_faces ? b.defects.degenerate_faces.length : 0;
+  const aDegen = a.defects.degenerate_faces ? a.defects.degenerate_faces.length : 0;
+  const bComp = b.metrics.component_id ? b.metrics.component_id.stats.count : '?';
+  const aComp = a.metrics.component_id ? a.metrics.component_id.stats.count : '?';
+  const bNM = b.defects.non_manifold_edges ? b.defects.non_manifold_edges.length : 0;
+  const aNM = a.defects.non_manifold_edges ? a.defects.non_manifold_edges.length : 0;
+  const bBound = b.defects.boundary_edges ? b.defects.boundary_edges.length : 0;
+  const aBound = a.defects.boundary_edges ? a.defects.boundary_edges.length : 0;
+  const bWater = bBound === 0 && bNM === 0;
+  const aWater = aBound === 0 && aNM === 0;
+
+  bar.innerHTML = [
+    delta(b.face_count, a.face_count, 'Faces'),
+    delta(bDegen, aDegen, 'Degenerates'),
+    delta(bComp, aComp, 'Components'),
+    delta(bNM, aNM, 'NM edges'),
+    delta(bWater ? '\u2713' : '\u2717', aWater ? '\u2713' : '\u2717', 'Watertight'),
+  ].join('');
+}
+
+// --- Resize ---
+function resize() {
+  for (const name of ['before', 'after']) {
+    const panel = panels[name];
+    const canvas = panel.renderer.domElement;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (canvas.width !== w * devicePixelRatio || canvas.height !== h * devicePixelRatio) {
+      panel.renderer.setSize(w, h, false);
+    }
+  }
+  const w = canvasBefore.clientWidth, h = canvasBefore.clientHeight;
+  if (w > 0 && h > 0) {
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+}
+
+// --- Animate ---
+function animate() {
+  requestAnimationFrame(animate);
+  resize();
+  controls.update();
+  for (const name of ['before', 'after']) {
+    panels[name].renderer.render(panels[name].scene, camera);
+  }
+}
+
+// --- Init ---
+async function init() {
+  await Promise.all([
+    loadPanel('before', 'before'),
+    loadPanel('after', 'after'),
+  ]);
+
+  // Position camera to see the normalized mesh
+  camera.position.set(0, 0.8, 2.5);
+  controls.target.set(0, 0, 0);
+  controls.update();
+
+  renderHUD('before');
+  renderHUD('after');
+  renderSummary();
+  applyViewMode();
+
+  document.getElementById('loading').style.display = 'none';
+  animate();
+}
+
+// --- Events ---
+document.getElementById('mode-select').addEventListener('change', applyViewMode);
+document.getElementById('metric-select').addEventListener('change', applyViewMode);
+
+init().catch(err => {
+  console.error(err);
+  document.getElementById('loading').textContent = 'Error: ' + err.message;
+});
+</script>
+</body>
+</html>
