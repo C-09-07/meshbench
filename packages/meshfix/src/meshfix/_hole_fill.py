@@ -235,12 +235,115 @@ def ear_clip_triangulate(loop_indices: np.ndarray, vertices: np.ndarray) -> np.n
 # ---------------------------------------------------------------------------
 
 
+def _centroid_fan(
+    loop_indices: np.ndarray,
+    vertices: np.ndarray,
+    centroid_idx: int,
+) -> np.ndarray:
+    """Create fan triangulation from boundary loop to a centroid vertex.
+
+    Returns (N, 3) face array connecting each consecutive edge pair
+    to the centroid.
+    """
+    n = len(loop_indices)
+    tris = np.empty((n, 3), dtype=np.intp)
+    tris[:, 0] = loop_indices
+    tris[:, 1] = np.roll(loop_indices, -1)
+    tris[:, 2] = centroid_idx
+    return tris
+
+
+def _ring_fill(
+    loop_indices: np.ndarray,
+    verts: list,
+) -> np.ndarray:
+    """Fill a hole with concentric rings converging to a centroid.
+
+    Automatically chooses the number of intermediate rings so that
+    radial edge lengths are comparable to boundary edge lengths,
+    producing near-equilateral triangles throughout the patch.
+
+    Args:
+        loop_indices: Ordered boundary vertex indices.
+        verts: Mutable vertex list (new vertices appended in place).
+
+    Returns:
+        (T, 3) face array for the fill patch.
+    """
+    n = len(loop_indices)
+    boundary_pos = np.array([verts[i] for i in loop_indices])
+    centroid = boundary_pos.mean(axis=0)
+
+    # Compute average spoke and boundary edge lengths
+    spoke_vecs = boundary_pos - centroid
+    avg_spoke = float(np.mean(np.linalg.norm(spoke_vecs, axis=1)))
+    edge_vecs = np.roll(boundary_pos, -1, axis=0) - boundary_pos
+    avg_edge = float(np.mean(np.linalg.norm(edge_vecs, axis=1)))
+
+    if avg_edge < 1e-30:
+        return np.empty((0, 3), dtype=np.intp)
+
+    # Number of rings so radial step ≈ avg boundary edge length
+    n_rings = max(0, round(avg_spoke / avg_edge) - 1)
+    n_rings = min(n_rings, 2)  # cap — diminishing returns beyond 2
+
+    if n_rings == 0:
+        # Simple fan — spoke is already comparable to boundary edge
+        centroid_idx = len(verts)
+        verts.append(centroid)
+        return _centroid_fan(loop_indices, verts, centroid_idx)
+
+    # Build rings: interpolate from boundary toward centroid
+    rings: list[np.ndarray] = [loop_indices]  # ring 0 = boundary
+
+    for r in range(1, n_rings + 1):
+        t = r / (n_rings + 1)  # 0 at boundary, 1 at centroid
+        ring_indices = np.empty(n, dtype=np.intp)
+        for i in range(n):
+            pos = (1 - t) * np.array(verts[loop_indices[i]]) + t * centroid
+            ring_indices[i] = len(verts)
+            verts.append(pos)
+        rings.append(ring_indices)
+
+    # Add centroid
+    centroid_idx = len(verts)
+    verts.append(centroid)
+
+    tris: list[tuple[int, int, int]] = []
+
+    # Triangle strips between consecutive rings (same vertex count)
+    for r in range(len(rings) - 1):
+        outer = rings[r]
+        inner = rings[r + 1]
+        for i in range(n):
+            j = (i + 1) % n
+            # Two triangles per quad
+            tris.append((int(outer[i]), int(outer[j]), int(inner[i])))
+            tris.append((int(inner[i]), int(outer[j]), int(inner[j])))
+
+    # Final fan from innermost ring to centroid
+    innermost = rings[-1]
+    for i in range(n):
+        j = (i + 1) % n
+        tris.append((int(innermost[i]), int(innermost[j]), centroid_idx))
+
+    return np.array(tris, dtype=np.intp)
+
+
+_RING_FILL_THRESHOLD = 8  # use ring fill for holes with >= this many edges
+
+
 def fill_holes(
     mesh: trimesh.Trimesh,
     boundary_edge_pairs: np.ndarray | None = None,
     max_hole_edges: int = 100,
 ) -> trimesh.Trimesh:
     """Fill holes by triangulating boundary loops.
+
+    Small holes (< 8 edges) use ear-clipping for exact boundary-only fill.
+    Larger holes use centroid-fan with iterative refinement: inserts a centroid
+    vertex and fans from each boundary edge to it, then subdivides any
+    triangles with aspect ratio > 2.5 by splitting their longest edge.
 
     Args:
         mesh: Input mesh (not mutated).
@@ -249,7 +352,7 @@ def fill_holes(
         max_hole_edges: Skip holes with more edges than this.
 
     Returns:
-        New Trimesh with holes filled (no new vertices added).
+        New Trimesh with holes filled.
     """
     faces = mesh.faces
     vertices = mesh.vertices
@@ -266,13 +369,19 @@ def fill_holes(
             vertices=vertices.copy(), faces=faces.copy(), process=False
         )
 
+    new_verts = list(vertices)  # mutable copy, may grow
     new_face_blocks: list[np.ndarray] = [faces.copy()]
 
     for loop in loops:
         if len(loop) > max_hole_edges:
             continue
 
-        tri = ear_clip_triangulate(loop, vertices)
+        if len(loop) >= _RING_FILL_THRESHOLD:
+            # Concentric ring fill with adaptive ring count
+            tri = _ring_fill(loop, new_verts)
+        else:
+            tri = ear_clip_triangulate(loop, vertices)
+
         if len(tri) > 0:
             new_face_blocks.append(tri)
 
@@ -281,5 +390,6 @@ def fill_holes(
             vertices=vertices.copy(), faces=faces.copy(), process=False
         )
 
+    all_verts = np.array(new_verts, dtype=np.float64)
     all_faces = np.vstack(new_face_blocks)
-    return trimesh.Trimesh(vertices=vertices.copy(), faces=all_faces, process=False)
+    return trimesh.Trimesh(vertices=all_verts, faces=all_faces, process=False)

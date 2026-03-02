@@ -67,6 +67,10 @@
     <option value="max_angle">Max Angle</option>
     <option value="skewness">Skewness</option>
   </select>
+  <span style="border-left:1px solid #333;height:24px"></span>
+  <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="cb-wireframe" style="accent-color:#e94560"> Wireframe</label>
+  <label>Opacity</label>
+  <input type="range" id="mesh-opacity" min="0.05" max="1" step="0.05" value="1" style="width:100px;accent-color:#e94560">
 </div>
 <div id="viewports">
   <div class="pane" id="pane-before">
@@ -179,6 +183,16 @@ function finalizePanel(name, sharedCenter, sharedRadius) {
   const mat = new THREE.MeshPhongMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide });
   const meshObj = new THREE.Mesh(meshGeo, mat);
   panel.scene.add(meshObj);
+
+  // Wireframe overlay (initially hidden)
+  const wire = new THREE.LineSegments(
+    new THREE.WireframeGeometry(meshGeo),
+    new THREE.LineBasicMaterial({ color: 0xddddf0, transparent: true, opacity: 0.6, linewidth: 2 }),
+  );
+  wire.visible = false;
+  panel.scene.add(wire);
+  panel.wireframe = wire;
+  panel.meshMat = mat;
 
   // Build defect overlays (initially hidden)
   buildDefectOverlays(panel, meshGeo, panel.gltf);
@@ -535,6 +549,21 @@ async function init() {
 // --- Events ---
 document.getElementById('mode-select').addEventListener('change', applyViewMode);
 document.getElementById('metric-select').addEventListener('change', applyViewMode);
+document.getElementById('cb-wireframe').addEventListener('change', (e) => {
+  for (const name of ['before', 'after']) {
+    if (panels[name].wireframe) panels[name].wireframe.visible = e.target.checked;
+  }
+});
+document.getElementById('mesh-opacity').addEventListener('input', (e) => {
+  const v = parseFloat(e.target.value);
+  for (const name of ['before', 'after']) {
+    const mat = panels[name].meshMat;
+    if (!mat) continue;
+    mat.transparent = v < 1;
+    mat.opacity = v;
+    mat.depthWrite = v >= 1;
+  }
+});
 
 init().catch(err => {
   console.error(err);
